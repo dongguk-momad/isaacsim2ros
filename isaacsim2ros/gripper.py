@@ -13,6 +13,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32
+from momad_msgs.msg import ControlValue, GripperValue
 
 # Isaac Sim ROS 2 Bridge 활성화
 enable_extension("isaacsim.ros2.bridge")
@@ -20,17 +21,19 @@ simulation_app.update()
 
 # 조인트 관련 설정
 MAX_GRIPPER_POS = 0.025  # meter
-kp = 3.5
-kd = 0.5
-max_force = 0.03
+kp = 10
+kd = 0
+max_force = 130
 
 class GripperController(Node):
     def __init__(self):
         super().__init__("gripper_controller")
 
         self.target_ratio = 0.0  # default target
-        self.subscription = self.create_subscription(Float32, "/gripper_command", self.command_callback, 10)
-        self.publisher = self.create_publisher(Float32, "/gripper_state", 10)
+        self.subscription = self.create_subscription(ControlValue, "/master_info", self.command_callback, 10)
+        self.publisher = self.create_publisher(ControlValue, "/gripper_state", 10)
+        self.pub_error = self.create_publisher(Float32, "/isaacsim_pos_error", 10)
+        self.pub_master_pos = self.create_publisher(Float32, "/master_pos", 10)
 
         # Isaac Sim World 초기화
         self.timeline = omni.timeline.get_timeline_interface()
@@ -38,7 +41,7 @@ class GripperController(Node):
         self.world.scene.add_default_ground_plane()
 
         # 그리퍼 로딩
-        gripper_usd_path = "/home/choiyj/Documents/hande.usd"
+        gripper_usd_path = "/home/user/Documents/hande.usd"
         add_reference_to_stage(gripper_usd_path, "/World/Gripper")
         self.world.reset()
         self.gripper = Articulation("/World/Gripper")
@@ -49,15 +52,24 @@ class GripperController(Node):
             self.world.step(render=True)
 
     def command_callback(self, msg):
-        self.target_ratio = float(np.clip(msg.data, 0.0, 1.0))
+        self.target_ratio = float(np.clip(msg.gripper_state.position, 0.0, 1.0))
 
-    def publish_gripper_state(self, position):
-        ratio = float(np.clip(position / MAX_GRIPPER_POS, 0.0, 1.0))
-        self.publisher.publish(Float32(data=ratio))
+    def publish_gripper_state(self, position, velocity=0.0, force=0.0):
+        ControllerState = ControlValue()
+        GripperState = GripperValue()
+        # GripperState.position = float(np.clip(position / MAX_GRIPPER_POS, 0.0, 1.0))
+        GripperState.position = float(position)
+        
+        GripperState.velocity = float(velocity)
+        GripperState.force = float(force)
+        ControllerState.gripper_state = GripperState
+        self.publisher.publish(ControllerState)
 
     def run(self):
         self.timeline.play()
         reset_needed = False
+        current_error = 0.0 # 태은 추가
+        last_error = 0.0 # 태은 추가
 
         while simulation_app.is_running():
             self.world.step(render=True)
@@ -71,20 +83,34 @@ class GripperController(Node):
                     reset_needed = False
 
                 # 컨트롤 루프
-                pos = self.gripper.get_joint_positions()[0]
-                vel = self.gripper.get_joint_velocities()[0]
-                target_pos = self.target_ratio * MAX_GRIPPER_POS
+                pos = self.gripper.get_joint_positions()[0] # m
+                vel = self.gripper.get_joint_velocities()[0] # m/s
+                target_pos = self.target_ratio * MAX_GRIPPER_POS # m
 
                 efforts = []
-                for i in range(2):
-                    error = target_pos - pos[i]
-                    derror = -vel[i]
-                    force = kp * error + kd * derror
+                # for i in range(2):
+                #     error = target_pos - pos[i]
+                #     derror = -vel[i]
+                #     force = kp * error + kd * derror
+                #     force = np.clip(force, -max_force, max_force)
+                #     efforts.append(force)
+
+                for i in range(2):                    
+                    current_error = target_pos - pos[i]
+                    derror = current_error - last_error
+                    
+                    force = kp * current_error + kd * derror
                     force = np.clip(force, -max_force, max_force)
                     efforts.append(force)
+                    last_error = current_error
+
+                self.pub_error.publish(Float32(data=current_error)) 
+                self.pub_master_pos.publish(Float32(data=target_pos)) 
+
+                # print(f"pos: {pos}, vel: {vel}, target: {target_pos}, efforts: {efforts}, error: {current_error}")
 
                 self.gripper.set_joint_efforts(efforts)
-                self.publish_gripper_state(pos[0])
+                self.publish_gripper_state(pos[0], vel[0], efforts[0])
 
         self.timeline.stop()
         self.destroy_node()
