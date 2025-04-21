@@ -23,10 +23,12 @@ simulation_app.update()
 
 # 조인트 관련 설정
 MAX_GRIPPER_POS = 0.025  # meter
-kp = 6
+kp = 7
+ki = 0.005
 kd = 0.75
 kf = 0.012
 max_force = 130
+integral_boundary = 0.1
 
 # kp = 5
 # kd = 0.6
@@ -43,11 +45,13 @@ class GripperController(Node):
         self.pub_master_pos = self.create_publisher(Float32, "/master_pos", 10)
 
         self.pub_test_force_p = self.create_publisher(Float32, "/force_p", 10)
+        self.pub_test_force_i = self.create_publisher(Float32, "/force_i", 10)        
         self.pub_test_force_d = self.create_publisher(Float32, "/force_d", 10)
         
         self.pub_test_force_ff = self.create_publisher(Float32, "/force_ff", 10)
         self.pub_test_force = self.create_publisher(Float32, "/force", 10)       
-       
+
+
         # Isaac Sim World 초기화
         self.timeline = omni.timeline.get_timeline_interface()
         self.world = World(stage_units_in_meters=1.0)
@@ -97,7 +101,7 @@ class GripperController(Node):
         self.timeline.play()
         reset_needed = False
         current_error = 0.0 # 태은 추가
-        last_error = 0.0 # 태은 추가
+        integral_error = [0.0, 0.0]
         start_time = time.time()
         while simulation_app.is_running():
             self.world.step(render=True)
@@ -113,36 +117,35 @@ class GripperController(Node):
                 # 컨트롤 루프
                 pos = self.gripper.get_joint_positions()[0] # m
                 vel = self.gripper.get_joint_velocities()[0] # m/s
+                # force = self.gripper.get_joint_forces()[0] # N
                 target_pos = self.target_ratio * MAX_GRIPPER_POS # m
 
+
                 efforts = []
+
                 for i in range(2):
                     error = target_pos - pos[i]
                     derror = -vel[i]
+                    integral_error[i] += error
+                    if error*integral_error[i] < 0:
+                        integral_error[i] = 0
+                        
                     force_p = kp * error # p controller 
+                    force_i = ki * integral_error[i] # I controller
                     force_d = kd * derror # d controller
                     force_ff = -self.master_gripper_velocity*kf # ff controller
-                    force = force_p + force_d + force_ff
-                    # force = np.clip(force, -max_force, max_force)
+
+                    force = force_p + force_i + force_d + force_ff
                     efforts.append(force)
 
-                
-                # for i in range(2):                    
-                #     current_error = target_pos - pos[i]
-                #     derror = current_error - last_error
-                    
-                #     force = kp * current_error + kd * derror
-                #     force = np.clip(force, -max_force, max_force)
-                #     efforts.append(force)
-                #     last_error = current_error
 
                 # for rqt
-                self.pub_error.publish(Float32(data=error)) 
+                self.pub_error.publish(Float32(data=error))
                 self.pub_master_pos.publish(Float32(data=target_pos)) 
 
                 if time.time() - start_time > 0.1:
-                    print(f"pos: {pos}, vel: {vel}, target: {target_pos}, efforts: {efforts}, error: {current_error}")
-                    print(f"force_p: {force_p}, force_d: {force_d}. force_ff: {force_ff}, force: {force}")
+                    print(f"pos: {pos}, vel: {vel}, efforts: {efforts}, target: {target_pos}, error: {error}, integral_error: {integral_error}")
+                    print(f"force_p: {force_p},force_i: {force_i} force_d: {force_d}. force_ff: {force_ff}, force: {force}")
                     print("#########################")
                     start_time = time.time()
 
@@ -151,8 +154,8 @@ class GripperController(Node):
 
 
                 self.pub_test_force_p.publish(Float32(data=force_p))
-                self.pub_test_force_d.publish(Float32(data=force_d))
-
+                self.pub_test_force_i.publish(Float32(data=force_i))
+                self.pub_test_force_d.publish(Float32(data=force_d))            
                 self.pub_test_force_ff.publish(Float32(data=force_ff))
                 self.pub_test_force.publish(Float32(data=force))
 
