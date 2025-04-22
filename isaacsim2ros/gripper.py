@@ -24,11 +24,13 @@ simulation_app.update()
 # 조인트 관련 설정
 MAX_GRIPPER_POS = 0.025  # meter
 kp = 7
-ki = 0.005
+ki = 0.05
 kd = 0.75
-kf = 0.012
+kf = 0.008
 max_force = 130
 integral_boundary = 0.1
+
+
 
 # kp = 5
 # kd = 0.6
