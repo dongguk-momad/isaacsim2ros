@@ -43,16 +43,14 @@ class GripperController(Node):
         self.target_ratio = 0.0  # default target
         self.subscription = self.create_subscription(ControlValue, "/master_info", self.command_callback, 10)
         self.publisher = self.create_publisher(ControlValue, "/gripper_state", 10)
-        self.pub_error = self.create_publisher(Float32, "/isaacsim_pos_error", 10)
-        self.pub_master_pos = self.create_publisher(Float32, "/master_pos", 10)
+        # self.pub_error = self.create_publisher(Float32, "/isaacsim_pos_error", 10)
+        # self.pub_master_pos = self.create_publisher(Float32, "/master_pos", 10)
 
-        self.pub_test_force_p = self.create_publisher(Float32, "/force_p", 10)
-        self.pub_test_force_i = self.create_publisher(Float32, "/force_i", 10)        
-        self.pub_test_force_d = self.create_publisher(Float32, "/force_d", 10)
-        
-        self.pub_test_force_ff = self.create_publisher(Float32, "/force_ff", 10)
-        self.pub_test_force = self.create_publisher(Float32, "/force", 10)       
-
+        # self.pub_test_force_p = self.create_publisher(Float32, "/force_p", 10)
+        # self.pub_test_force_i = self.create_publisher(Float32, "/force_i", 10)        
+        # self.pub_test_force_d = self.create_publisher(Float32, "/force_d", 10)
+        # self.pub_test_force_ff = self.create_publisher(Float32, "/force_ff", 10)
+        # self.pub_test_force = self.create_publisher(Float32, "/force", 10)       
 
         # Isaac Sim World 초기화
         self.timeline = omni.timeline.get_timeline_interface()
@@ -142,8 +140,8 @@ class GripperController(Node):
 
 
                 # for rqt
-                self.pub_error.publish(Float32(data=error))
-                self.pub_master_pos.publish(Float32(data=target_pos)) 
+                # self.pub_error.publish(Float32(data=error))
+                # self.pub_master_pos.publish(Float32(data=target_pos)) 
 
                 if time.time() - start_time > 0.1:
                     print(f"pos: {pos}, vel: {vel}, efforts: {efforts}, target: {target_pos}, error: {error}, integral_error: {integral_error}")
@@ -155,11 +153,11 @@ class GripperController(Node):
                 self.publish_gripper_state(pos[0], vel[0], efforts[0])
 
 
-                self.pub_test_force_p.publish(Float32(data=force_p))
-                self.pub_test_force_i.publish(Float32(data=force_i))
-                self.pub_test_force_d.publish(Float32(data=force_d))            
-                self.pub_test_force_ff.publish(Float32(data=force_ff))
-                self.pub_test_force.publish(Float32(data=force))
+                # self.pub_test_force_p.publish(Float32(data=force_p))
+                # self.pub_test_force_i.publish(Float32(data=force_i))
+                # self.pub_test_force_d.publish(Float32(data=force_d))            
+                # self.pub_test_force_ff.publish(Float32(data=force_ff))
+                # self.pub_test_force.publish(Float32(data=force))
 
         self.timeline.stop()
         self.destroy_node()
