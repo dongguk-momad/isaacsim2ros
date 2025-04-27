@@ -27,7 +27,7 @@ class RobotarmController(Node):
     def __init__(self):
         super().__init__("robotarm_controller")
 
-        self.target_ratio = 0.0  # default target
+        self.target_position = [0.0, -1.5, 1.5, 0.0, 0.0, 0.0]  # default target
         self.subscription = self.create_subscription(ControlValue, "/master_info", self.command_callback, 10)
         self.publisher = self.create_publisher(ControlValue, "/slave_info", 10)
 
@@ -43,7 +43,11 @@ class RobotarmController(Node):
 
         self.world.reset()
 
-        self.robotarm = SingleManipulator("/UR5")
+        self.robotarm = SingleManipulator(
+            prim_path="/UR5",
+            end_effector_prim_path="/UR5/wrist_3_link/flange",  # UR5의 엔드이펙터 링크 이름
+            name="ur5",
+        )
         self.robotarm.initialize()
 
         # stabilize
@@ -51,9 +55,12 @@ class RobotarmController(Node):
             self.world.step(render=True)
 
     def command_callback(self, msg):
+        # pass
         self.target_position = msg.robotarm_state.position
         self.master_velocity = msg.robotarm_state.velocity
         self.master_force = msg.robotarm_state.force
+        for i in range(len(self.target_position)):
+            self.target_position[i] = np.clip(self.target_position[i]*np.pi/180, -3.14, 3.14)
         
     def publish_slave_info(self):
         msg = ControlValue()
@@ -63,7 +70,7 @@ class RobotarmController(Node):
         self.publisher.publish(msg)
 
     def run(self):
-        self.timeline.start()
+        self.timeline.play()
         reset_needed = False
         start_time = time.time()
         while simulation_app.is_running():
@@ -78,7 +85,7 @@ class RobotarmController(Node):
                     reset_needed = False
 
                 self.robotarm.apply_action(ArticulationAction(joint_positions=self.target_position))
-                self.publish_slave_info()
+                # self.publish_slave_info()
 
         # 시뮬레이션 종료
         self.timeline.stop()
