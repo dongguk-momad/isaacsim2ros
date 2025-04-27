@@ -42,7 +42,7 @@ class GripperController(Node):
 
         self.target_ratio = 0.0  # default target
         self.subscription = self.create_subscription(ControlValue, "/master_info", self.command_callback, 10)
-        self.publisher = self.create_publisher(ControlValue, "/gripper_state", 10)
+        self.publisher = self.create_publisher(ControlValue, "/slave_info", 10)
         # self.pub_error = self.create_publisher(Float32, "/isaacsim_pos_error", 10)
         # self.pub_master_pos = self.create_publisher(Float32, "/master_pos", 10)
 
