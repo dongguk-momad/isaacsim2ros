@@ -42,27 +42,13 @@ class RobotarmController(Node):
         self.world = World(stage_units_in_meters=1.0)
         self.world.scene.add_default_ground_plane()
 
-        # UR5 로딩
-        # asset_root = get_assets_root_path()
-        # ur5_usd_path = asset_root + "/Isaac/Robots/UniversalRobots/ur5/ur5.usd"
-        # add_reference_to_stage(ur5_usd_path, "/UR5")
-
-        # self.world.reset()
-
-        # self.robotarm = SingleManipulator(
-        #     prim_path="/UR5",
-        #     end_effector_prim_path="/UR5/wrist_3_link/flange",  # UR5의 엔드이펙터 링크 이름
-        #     name="ur5",
-        # )
-        # self.robotarm.initialize()
-
-        ur5_usd_path = "/home/choiyj/Desktop/moma/urhand4.usd"
+        ur5_usd_path = "/home/choiyj/Desktop/moma/urhand5_flatten.usd"
         add_reference_to_stage(ur5_usd_path, "/World")
 
         # SingleManipulator 생성
         self.robotarm = SingleManipulator(
             prim_path="/World/ur5",
-            end_effector_prim_path="/World/ur5/tool0",  # UR5의 엔드이펙터 링크 이름
+            end_effector_prim_path="/World/ur5/wrist_3_link/flange",  # UR5의 엔드이펙터 링크 이름
             name="ur5",
         )
         self.gripper = Articulation("/World/hande")
@@ -75,6 +61,8 @@ class RobotarmController(Node):
         self.robotarm.initialize()
         self.gripper.initialize()
 
+        self.target_position = [0.0] * 6
+        self.gripper_target_position = 0.0
         self.master_gripper_velocity = 0   
 
         # stabilize
@@ -89,7 +77,7 @@ class RobotarmController(Node):
         for i in range(len(self.target_position)):
             self.target_position[i] = np.clip(self.target_position[i]*np.pi/180, -3.14, 3.14)
 
-        self.target_ratio = float(np.clip(msg.gripper_state.position, 0.0, 1.0))
+        self.gripper_target_position = float(np.clip(msg.gripper_state.position, 0.0, 1.0)) * MAX_GRIPPER_POS
         self.master_gripper_velocity = msg.gripper_state.velocity
 
         # self.target_position.extend([self.target_ratio * MAX_GRIPPER_POS]*2)
@@ -109,6 +97,12 @@ class RobotarmController(Node):
         ControllerState.gripper_state = GripperState
         self.publisher.publish(msg)
 
+    def get_gripper_state(self):
+        # Get the gripper state (position, velocity, force)
+        position = self.robotarm.get_joint_positions()[6:8] # m
+        velocity = self.robotarm.get_joint_velocities()[6:8] # m/s
+        return position, velocity
+
     def run(self):
         self.timeline.play()
         reset_needed = False
@@ -125,17 +119,12 @@ class RobotarmController(Node):
                     self.world.reset()
                     reset_needed = False
 
-                pos = self.robotarm.get_joint_positions()[6:8] # m
-                vel = self.robotarm.get_joint_velocities()[6:8] # m/s
-
-                print("pos: ", pos)
-                # force = self.gripper.get_joint_forces()[0] # N
-                target_pos = self.target_ratio * MAX_GRIPPER_POS # m
+                pos, vel = self.get_gripper_state()
 
                 efforts = []
 
                 for i in range(2):
-                    error = target_pos - pos[i]
+                    error = self.gripper_target_position - pos[i]
                     derror = -vel[i]
                     integral_error[i] += error
                     if error*integral_error[i] < 0:
@@ -149,7 +138,7 @@ class RobotarmController(Node):
                     force = force_p + force_i + force_d + force_ff
                     efforts.append(force)
 
-                self.robotarm.set_joint_efforts(efforts, joint_indices=[6, 7])
+                self.robotarm.apply_action(ArticulationAction([self.gripper_target_position], joint_indices=[6, 7]))
 
                 self.robotarm.apply_action(ArticulationAction(joint_positions=self.target_position, 
                                            joint_indices=[0, 1, 2, 3, 4, 5]))
