@@ -9,6 +9,7 @@ from isaacsim.core.utils.extensions import enable_extension
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.core.prims import Articulation
+from isaacsim.core.api.objects import DynamicCuboid
 
 # ROS 2 관련
 import time
@@ -65,6 +66,17 @@ class RobotarmController(Node):
         self.gripper_target_position = 0.0
         self.master_gripper_velocity = 0   
 
+        cube = self.world.scene.add(
+                DynamicCuboid(
+                    name="cube",
+                    position=np.array([0.3, 0.3, 0.3]),
+                    prim_path="/World/Cube",
+                    scale=np.array([0.03, 0.03, 0.03]),
+                    size=1.0,
+                    color=np.array([0, 0, 1]),
+                )
+        )
+
         # stabilize
         for _ in range(20):
             self.world.step(render=True)
@@ -118,25 +130,6 @@ class RobotarmController(Node):
                 if reset_needed:
                     self.world.reset()
                     reset_needed = False
-
-                pos, vel = self.get_gripper_state()
-
-                efforts = []
-
-                for i in range(2):
-                    error = self.gripper_target_position - pos[i]
-                    derror = -vel[i]
-                    integral_error[i] += error
-                    if error*integral_error[i] < 0:
-                        integral_error[i] = 0
-                        
-                    force_p = kp * error # p controller 
-                    force_i = ki * integral_error[i] # I controller
-                    force_d = kd * derror # d controller
-                    force_ff = -self.master_gripper_velocity*kf # ff controller
-
-                    force = force_p + force_i + force_d + force_ff
-                    efforts.append(force)
 
                 self.robotarm.apply_action(ArticulationAction([self.gripper_target_position], joint_indices=[6, 7]))
 
