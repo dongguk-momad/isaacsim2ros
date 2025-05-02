@@ -7,6 +7,7 @@ from isaacsim.core.api import World
 from isaacsim.core.prims import Articulation
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.utils.extensions import enable_extension
+from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.core.api.objects import DynamicCuboid
 
 # ROS 2 관련
@@ -77,13 +78,14 @@ class GripperController(Node):
         )
 
         self.master_gripper_velocity = 0     
+        self.gripper_target_position = 0.01
 
         # stabilize
         for _ in range(20):
             self.world.step(render=True)
 
     def command_callback(self, msg):
-        self.target_ratio = float(np.clip(msg.gripper_state.position, 0.0, 1.0))
+        self.gripper_target_position = float(np.clip(msg.gripper_state.position, 0.0, 1.0)) * MAX_GRIPPER_POS
         self.master_gripper_velocity = msg.gripper_state.velocity
         # self.master_gripper_force = msg.gripper_state.force
 
@@ -116,41 +118,13 @@ class GripperController(Node):
                     reset_needed = False
 
                 # 컨트롤 루프
+                # force = self.gripper.get_joint_forces()[0] # N
+                self.gripper.apply_action(ArticulationAction(joint_positions=[self.gripper_target_position, self.gripper_target_position], joint_indices=[0, 1]))
+
                 pos = self.gripper.get_joint_positions()[0] # m
                 vel = self.gripper.get_joint_velocities()[0] # m/s
-                # force = self.gripper.get_joint_forces()[0] # N
-                target_pos = self.target_ratio * MAX_GRIPPER_POS # m
-
-
-                efforts = []
-
-                for i in range(2):
-                    error = target_pos - pos[i]
-                    derror = -vel[i]
-                    integral_error[i] += error
-                    if error*integral_error[i] < 0:
-                        integral_error[i] = 0
-                        
-                    force_p = kp * error # p controller 
-                    force_i = ki * integral_error[i] # I controller
-                    force_d = kd * derror # d controller
-                    force_ff = -self.master_gripper_velocity*kf # ff controller
-
-                    force = force_p + force_i + force_d + force_ff
-                    efforts.append(force)
-
-
-                # for rqt
-                # self.pub_error.publish(Float32(data=error))
-                # self.pub_master_pos.publish(Float32(data=target_pos)) 
-
-                if time.time() - start_time > 0.1:
-                    print(f"pos: {pos}, vel: {vel}, efforts: {efforts}, target: {target_pos}, error: {error}, integral_error: {integral_error}")
-                    print(f"force_p: {force_p},force_i: {force_i} force_d: {force_d}. force_ff: {force_ff}, force: {force}")
-                    print("#########################")
-                    start_time = time.time()
-
-                self.gripper.set_joint_efforts(efforts)
+                efforts = self.gripper.get_applied_joint_efforts()[0]
+                
                 self.publish_gripper_state(pos[0], vel[0], efforts[0])
 
 
