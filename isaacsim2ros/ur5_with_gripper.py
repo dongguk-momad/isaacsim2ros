@@ -107,7 +107,13 @@ class RobotarmController(Node):
         position = self.robotarm.get_joint_positions().tolist()
         velocity = self.robotarm.get_joint_velocities().tolist()
         force = self.robotarm.get_measured_joint_efforts().tolist()
-        return position, velocity, force
+        gravity = self.gripper.get_generalized_gravity_forces().tolist()[0]
+        cor = self.gripper.get_coriolis_and_centrifugal_forces().tolist()[0]
+        real_force = [f - g - c for f, g, c in zip(force, gravity, cor)]
+        # print("gravity: ", gravity)
+        # print("cor: ", cor)
+        # print("force - gravity - cor: ", np.array(force) - np.array(gravity) - np.array(cor))
+        return position, velocity, real_force
 
     def run(self):
         self.timeline.play()
