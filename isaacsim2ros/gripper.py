@@ -9,6 +9,7 @@ from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.utils.extensions import enable_extension
 from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.core.api.objects import DynamicCuboid
+from isaacsim.core.api import PhysicsContext
 
 # ROS 2 관련
 import numpy as np
@@ -40,7 +41,8 @@ integral_boundary = 0.1
 class GripperController(Node):
     def __init__(self):
         super().__init__("gripper_controller")
-
+        self.physicscontext = PhysicsContext(physics_dt=1.0 / 60.0)
+        self.physicscontext.set_physics_dt(dt = 1.0 / 120, substeps=4)
         self.target_ratio = 0.0  # default target
         self.subscription = self.create_subscription(ControlValue, "/master_info", self.command_callback, 10)
         self.publisher = self.create_publisher(ControlValue, "/slave_info", 10)
@@ -123,7 +125,7 @@ class GripperController(Node):
 
                 pos = self.gripper.get_joint_positions()[0] # m
                 vel = self.gripper.get_joint_velocities()[0] # m/s
-                efforts = self.gripper.get_applied_joint_efforts()[0]
+                efforts = self.gripper.get_measured_joint_efforts()[0]
                 
                 self.publish_gripper_state(pos[0], vel[0], efforts[0])
 

@@ -9,6 +9,7 @@ from isaacsim.core.utils.extensions import enable_extension
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.utils.types import ArticulationAction
 from isaacsim.core.prims import Articulation
+from isaacsim.core.api import PhysicsContext
 from isaacsim.core.api.objects import DynamicCuboid
 
 # ROS 2 관련
@@ -23,16 +24,12 @@ from momad_msgs.msg import ControlValue, GripperValue
 enable_extension("isaacsim.ros2.bridge")
 simulation_app.update()
 MAX_GRIPPER_POS = 0.025
-kp = 7
-ki = 0.05
-kd = 0.75
-kf = 0.008
-max_force = 130
-integral_boundary = 0.1
 
 class RobotarmController(Node):
     def __init__(self):
         super().__init__("robotarm_controller")
+        self.physicscontext = PhysicsContext(physics_dt=1.0 / 60.0)
+        self.physicscontext.set_physics_dt(dt = 1.0 / 120, substeps=4)
 
         self.target_position = [0.0, -1.5, 1.5, 0.0, 0.0, 0.0, 0.0, 0.0]  # default target
         self.subscription = self.create_subscription(ControlValue, "/master_info", self.command_callback, 10)
@@ -43,7 +40,7 @@ class RobotarmController(Node):
         self.world = World(stage_units_in_meters=1.0)
         self.world.scene.add_default_ground_plane()
 
-        ur5_usd_path = "/home/choiyj/Desktop/moma/urhand5_flatten.usd"
+        ur5_usd_path = "/home/choiyj/Desktop/moma/urhand5_flatten_test.usd"
         add_reference_to_stage(ur5_usd_path, "/World")
 
         # SingleManipulator 생성
@@ -64,7 +61,7 @@ class RobotarmController(Node):
 
         self.target_position = [0.0] * 6
         self.gripper_target_position = 0.0
-        self.master_gripper_velocity = 0   
+        self.gripper_target_velocity = 0   
 
         cube = self.world.scene.add(
                 DynamicCuboid(
@@ -90,36 +87,31 @@ class RobotarmController(Node):
             self.target_position[i] = np.clip(self.target_position[i]*np.pi/180, -3.14, 3.14)
 
         self.gripper_target_position = float(np.clip(msg.gripper_state.position, 0.0, 1.0)) * MAX_GRIPPER_POS
-        self.master_gripper_velocity = msg.gripper_state.velocity
+        self.gripper_target_velocity = msg.gripper_state.velocity *0.1
 
         # self.target_position.extend([self.target_ratio * MAX_GRIPPER_POS]*2)
         
-    def publish_slave_info(self, position, velocity=0.0, force=0.0):
+    def publish_slave_info(self):
         msg = ControlValue()
-        msg.robotarm_state.position = self.robotarm.get_joint_positions()
-        msg.robotarm_state.velocity = self.robotarm.get_joint_velocities()
-        msg.robotarm_state.force = self.robotarm.get_joint_torques()
-        ControllerState = ControlValue()
-        GripperState = GripperValue()
-        GripperState.position = float(np.clip(position / MAX_GRIPPER_POS, 0.0, 1.0))
-        # GripperState.position = float(position) # 태은
-        
-        GripperState.velocity = float(velocity)
-        GripperState.force = float(force)
-        ControllerState.gripper_state = GripperState
+        pos, vel, force = self.get_robot_state()
+        msg.robotarm_state.position = pos[0:6]
+        msg.robotarm_state.velocity = vel[0:6]
+        msg.robotarm_state.force = force[0:6]
+        msg.gripper_state.position = float(np.clip(pos[6] / MAX_GRIPPER_POS, 0.0, 1.0))
+        msg.gripper_state.velocity = float(vel[6])
+        msg.gripper_state.force = float(force[6])
         self.publisher.publish(msg)
 
-    def get_gripper_state(self):
-        # Get the gripper state (position, velocity, force)
-        position = self.robotarm.get_joint_positions()[6:8] # m
-        velocity = self.robotarm.get_joint_velocities()[6:8] # m/s
-        return position, velocity
+    def get_robot_state(self):
+        # Get the robot state (position, velocity, force)
+        position = self.robotarm.get_joint_positions().tolist()
+        velocity = self.robotarm.get_joint_velocities().tolist()
+        force = self.robotarm.get_measured_joint_efforts().tolist()
+        return position, velocity, force
 
     def run(self):
         self.timeline.play()
         reset_needed = False
-        start_time = time.time()
-        integral_error = [0.0, 0.0]
         while simulation_app.is_running():
             self.world.step(render=True)
             rclpy.spin_once(self, timeout_sec=0.0)
@@ -131,11 +123,11 @@ class RobotarmController(Node):
                     self.world.reset()
                     reset_needed = False
 
-                self.robotarm.apply_action(ArticulationAction([self.gripper_target_position], joint_indices=[6, 7]))
+                self.robotarm.apply_action(ArticulationAction(joint_positions=[self.gripper_target_position, self.gripper_target_position], joint_velocities=[self.gripper_target_velocity, self.gripper_target_velocity], joint_indices=[6, 7]))
 
                 self.robotarm.apply_action(ArticulationAction(joint_positions=self.target_position, 
                                            joint_indices=[0, 1, 2, 3, 4, 5]))
-                # self.publish_slave_info()
+                self.publish_slave_info()
 
         # 시뮬레이션 종료
         self.timeline.stop()
