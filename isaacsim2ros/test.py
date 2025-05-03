@@ -1,13 +1,14 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32
+from momad_msgs.msg import ControlValue, GripperValue
 import numpy as np
 
 class GripperCommandTestNode(Node):
     def __init__(self):
         super().__init__("gripper_command_test_node")
 
-        self.publisher = self.create_publisher(Float32, "/gripper_command", 10)
+        self.publisher = self.create_publisher(ControlValue, "/master_info", 10)
 
         timer_period = 0.05  # 50ms 간격 (20Hz)
         self.timer = self.create_timer(timer_period, self.timer_callback)
@@ -26,12 +27,12 @@ class GripperCommandTestNode(Node):
     def timer_callback(self):
         if self.index >= len(self.steps):
             self.index = 0  # loop back
-
-        value = float(self.steps[self.index])
-        msg = Float32()
-        msg.data = value
-        self.publisher.publish(msg)
-        self.get_logger().info(f"Publishing gripper command: {value:.3f}")
+        ControllerState = ControlValue()
+        GripperState = GripperValue()
+        GripperState.position = float(np.clip(self.steps[self.index], 0.0, 1.0))
+        ControllerState.gripper_state = GripperState
+        self.publisher.publish(ControllerState)
+        self.get_logger().info(f"Publishing gripper command: {self.steps[self.index]:.3f}")
         self.index += 1
 
 def main(args=None):

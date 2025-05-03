@@ -60,7 +60,7 @@ class GripperController(Node):
 
         # 그리퍼 로딩
         # gripper_usd_path = "/home/user/Documents/hande.usd"
-        gripper_usd_path = "/home/choiyj/Documents/hande.usd"
+        gripper_usd_path = "/home/choiyj/Documents/hande_edited.usd"
         add_reference_to_stage(gripper_usd_path, "/World/Gripper")
         self.world.reset()
         self.gripper = Articulation("/World/Gripper")
