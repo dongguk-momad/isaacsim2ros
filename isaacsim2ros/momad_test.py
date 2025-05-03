@@ -84,8 +84,8 @@ class RobotarmController(Node):
         self.diff_controller = DifferentialController(
             name="diff_controller",
             wheel_dof_indices=jackal_indices,
-            wheel_radius=0.098,
-            wheel_base=0.43,
+            wheel_radius=0.098*1.5,
+            wheel_base=0.43*1.5,
             max_linear_speed = 1.0,
             max_angular_speed = 1.0,
             max_wheel_speed = 30.0,
