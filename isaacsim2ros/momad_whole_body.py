@@ -127,11 +127,14 @@ class RobotarmController(Node):
         self.robotarm_target_position = msg.robotarm_state.position
         self.robotarm_target_velocity = msg.robotarm_state.velocity
         
-        for i in range(len(self.target_position)):
+        for i in range(len(self.robotarm_target_position)):
             self.robotarm_target_position[i] = np.clip(self.robotarm_target_position[i]*np.pi/180, -3.14, 3.14)
 
-        self.gripper_target_position = [float(np.clip(msg.gripper_state.position, 0.0, 1.0)) * MAX_GRIPPER_POS] * 2
-        self.gripper_target_velocity = [msg.gripper_state.velocity] * 2
+        self.gripper_target_position = msg.gripper_state.position
+        self.gripper_target_velocity = msg.gripper_state.velocity
+
+        for i in range(len(self.gripper_target_position)):
+            self.gripper_target_position[i] = np.clip(self.gripper_target_position[i], 0, 1) * MAX_GRIPPER_POS
 
         self.mobile_target_linear = msg.mobile_state.linear_velocity
         self.mobile_target_angular = msg.mobile_state.angular_velocity
@@ -142,9 +145,9 @@ class RobotarmController(Node):
         msg.robotarm_state.position = pos[0:6]
         msg.robotarm_state.velocity = vel[0:6]
         msg.robotarm_state.force = force[0:6]
-        msg.gripper_state.position = float(np.clip(pos[6] / MAX_GRIPPER_POS, 0.0, 1.0))
-        msg.gripper_state.velocity = float(vel[6])
-        msg.gripper_state.force = float(force[6])
+        msg.gripper_state.position = np.clip(pos[6:7] / MAX_GRIPPER_POS, 0.0, 1.0).tolist()
+        msg.gripper_state.velocity = vel[6:7]
+        msg.gripper_state.force = force[6:7]
 
         msg.mobile_state.linear_velocity = float(linear_vel)
         msg.mobile_state.angular_velocity = float(angular_vel)
