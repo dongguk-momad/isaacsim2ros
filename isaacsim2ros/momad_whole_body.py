@@ -145,9 +145,9 @@ class RobotarmController(Node):
         msg.robotarm_state.position = pos[0:6]
         msg.robotarm_state.velocity = vel[0:6]
         msg.robotarm_state.force = force[0:6]
-        msg.gripper_state.position = np.clip(pos[6:7] / MAX_GRIPPER_POS, 0.0, 1.0).tolist()
-        msg.gripper_state.velocity = vel[6:7]
-        msg.gripper_state.force = force[6:7]
+        msg.gripper_state.position = [np.clip(p / MAX_GRIPPER_POS, 0.0, 1.0) for p in pos[6:8]]
+        msg.gripper_state.velocity = vel[6:8]
+        msg.gripper_state.force = force[6:8]
 
         msg.mobile_state.linear_velocity = float(linear_vel)
         msg.mobile_state.angular_velocity = float(angular_vel)
