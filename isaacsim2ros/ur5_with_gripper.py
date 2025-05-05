@@ -29,7 +29,7 @@ class RobotarmController(Node):
     def __init__(self):
         super().__init__("robotarm_controller")
         self.physicscontext = PhysicsContext(physics_dt=1.0 / 60.0)
-        self.physicscontext.set_physics_dt(dt = 1.0 / 120, substeps=4)
+        self.physicscontext.set_physics_dt(dt = 1.0 / 240, substeps=8)
 
         self.target_position = [0.0, -1.5, 1.5, 0.0, 0.0, 0.0, 0.0, 0.0]  # default target
         self.subscription = self.create_subscription(ControlValue, "/master_info", self.command_callback, 10)
@@ -129,7 +129,7 @@ class RobotarmController(Node):
                     self.world.reset()
                     reset_needed = False
 
-                self.robotarm.apply_action(ArticulationAction(joint_positions=[self.gripper_target_position, self.gripper_target_position], joint_velocities=[self.gripper_target_velocity, self.gripper_target_velocity], joint_indices=[6, 7]))
+                self.robotarm.apply_action(ArticulationAction(joint_positions=[self.gripper_target_position, self.gripper_target_position], joint_velocities=[self.gripper_target_velocity*0.1, self.gripper_target_velocity*0.1], joint_indices=[6, 7]))
 
                 self.robotarm.apply_action(ArticulationAction(joint_positions=self.target_position, 
                                            joint_indices=[0, 1, 2, 3, 4, 5]))

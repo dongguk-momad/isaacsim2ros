@@ -70,7 +70,7 @@ class RobotarmController(Node):
         self.world.scene.add_default_ground_plane()
 
         # ur5_usd_path = "/home/choiyj/Desktop/moma/urhand5_flatten.usd"
-        momad_usd_path = "/home/choiyj/Desktop/momad_test.usd"
+        momad_usd_path = "/home/choiyj/Desktop/momad_test3.usd"
         add_reference_to_stage(momad_usd_path, "/World")
 
         # SingleManipulator 생성
@@ -171,7 +171,7 @@ class RobotarmController(Node):
 
                 self.robotarm.apply_action(ArticulationAction(joint_positions=self.target_position, 
                                            joint_indices=ur5_indices))
-                self.robotarm.apply_action(self.diff_controller.forward([0.1, 0.8]))
+                self.robotarm.apply_action(self.diff_controller.forward([0.0, 1]))
                 # self.publish_slave_info()
 
         # 시뮬레이션 종료
