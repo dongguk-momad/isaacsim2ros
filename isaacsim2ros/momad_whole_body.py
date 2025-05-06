@@ -61,8 +61,8 @@ class RobotarmController(Node):
         super().__init__("robotarm_controller")
 
         self.target_position = [0.0, -1.5, 1.5, 0.0, 0.0, 0.0, 0.0, 0.0]  # default target
-        self.subscription = self.create_subscription(ControlValue, "/master_info", self.command_callback, 10)
-        self.publisher = self.create_publisher(ControlValue, "/slave_info", 10)
+        self.subscription = self.create_subscription(ControlValue, "/master_info", self.command_callback, 1)
+        self.publisher = self.create_publisher(ControlValue, "/slave_info", 1)
 
         # Isaac Sim World 초기화
         self.timeline = omni.timeline.get_timeline_interface()
@@ -123,6 +123,8 @@ class RobotarmController(Node):
             self.world.step(render=True)
 
     def command_callback(self, msg):
+        latency = time.time() - msg.stamp
+        print("ws latency: ", latency)
         # pass
         self.robotarm_target_position = msg.robotarm_state.position
         self.robotarm_target_velocity = msg.robotarm_state.velocity
@@ -151,6 +153,7 @@ class RobotarmController(Node):
 
         msg.mobile_state.linear_velocity = float(linear_vel)
         msg.mobile_state.angular_velocity = float(angular_vel)
+        msg.stamp = time.time()
         self.publisher.publish(msg)
 
     def get_robot_state(self):
@@ -187,7 +190,8 @@ class RobotarmController(Node):
 
                 self.robotarm.apply_action(ArticulationAction(joint_positions=self.gripper_target_position, joint_velocities=self.gripper_target_velocity, joint_indices=HANDE_INDICES))
 
-                self.robotarm.apply_action(ArticulationAction(joint_positions=self.robotarm_target_position, joint_velocities=self.robotarm_target_velocity, joint_indices=UR5_INDICES))
+                # self.robotarm.apply_action(ArticulationAction(joint_positions=self.robotarm_target_position, joint_velocities=self.robotarm_target_velocity, joint_indices=UR5_INDICES))
+                self.robotarm.apply_action(ArticulationAction(joint_positions=self.robotarm_target_position, joint_indices=UR5_INDICES))
 
                 self.robotarm.apply_action(self.diff_controller.forward([self.mobile_target_linear, self.mobile_target_angular]))
 
