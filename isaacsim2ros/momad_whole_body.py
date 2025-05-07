@@ -18,7 +18,7 @@ import time
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, Float32MultiArray
 from momad_msgs.msg import ControlValue, GripperValue
 
 # Isaac Sim ROS 2 Bridge 활성화
@@ -63,6 +63,7 @@ class RobotarmController(Node):
         self.target_position = [0.0, -1.5, 1.5, 0.0, 0.0, 0.0, 0.0, 0.0]  # default target
         self.subscription = self.create_subscription(ControlValue, "/master_info", self.command_callback, 1)
         self.publisher = self.create_publisher(ControlValue, "/slave_info", 1)
+        self.publisher2 = self.create_publisher(Float32MultiArray, "/force", 1)
 
         # Isaac Sim World 초기화
         self.timeline = omni.timeline.get_timeline_interface()
@@ -81,15 +82,6 @@ class RobotarmController(Node):
         )
         self.gripper = Articulation("/World/hande")
 
-        self.diff_controller = DifferentialController(
-            name="diff_controller",
-            wheel_dof_indices=JACKAL_INDICES,
-            wheel_radius=WHEEL_RADIUS,
-            wheel_base=WHEEL_BASE,
-            max_linear_speed = 1.0,
-            max_angular_speed = np.pi,
-            max_wheel_speed = 100,
-        )
         # 월드 초기화
         # self.world.scene.add_default_ground_plane()
         self.world.reset()
@@ -143,7 +135,7 @@ class RobotarmController(Node):
         
     def publish_slave_info(self):
         msg = ControlValue()
-        pos, vel, force, linear_vel, angular_vel = self.get_robot_state()
+        pos, vel, force, linear_vel, angular_vel, force_sensor = self.get_robot_state()
         msg.robotarm_state.position = pos[0:6]
         msg.robotarm_state.velocity = vel[0:6]
         msg.robotarm_state.force = force[0:6]
@@ -153,26 +145,68 @@ class RobotarmController(Node):
 
         msg.mobile_state.linear_velocity = float(linear_vel)
         msg.mobile_state.angular_velocity = float(angular_vel)
+
+        # force3(x, y, z), torque3(x, y, z)
+        msg.force_torque = force_sensor[6]
+
         msg.stamp = time.time()
         self.publisher.publish(msg)
 
     def get_robot_state(self):
         # Get the gripper state (position, velocity, force)
-        position = self.robotarm.get_joint_positions(joint_indices=WHOLE_INDICES).tolist()
-        velocity = self.robotarm.get_joint_velocities(joint_indices=WHOLE_INDICES).tolist()
+        self.position = self.robotarm.get_joint_positions(joint_indices=WHOLE_INDICES).tolist()
+        self.velocity = self.robotarm.get_joint_velocities(joint_indices=WHOLE_INDICES).tolist()
         force = self.robotarm.get_measured_joint_efforts(joint_indices=WHOLE_INDICES).tolist()
         gravity = self.gripper.get_generalized_gravity_forces(joint_indices=WHOLE_INDICES).tolist()[0]
         cor = self.gripper.get_coriolis_and_centrifugal_forces(joint_indices=WHOLE_INDICES).tolist()[0]
-        real_force = [f - g - c for f, g, c in zip(force, gravity, cor)]
+        self.real_force = [f - g - c for f, g, c in zip(force, gravity, cor)]
 
-        omega_L = np.mean([velocity[JACKAL_INDICES[0]], velocity[JACKAL_INDICES[2]]])
-        omega_R = np.mean([velocity[JACKAL_INDICES[1]], velocity[JACKAL_INDICES[3]]])
+        self.force_sensor = self.robotarm.get_measured_joint_forces(joint_indices=WHOLE_INDICES).tolist()
 
-        linear_vel = WHEEL_RADIUS * 0.5 * (omega_L + omega_R)
-        angular_vel = WHEEL_RADIUS / WHEEL_BASE * (omega_R - omega_L)
+        omega_L = np.mean([self.velocity[JACKAL_INDICES[0]], self.velocity[JACKAL_INDICES[2]]])
+        omega_R = np.mean([self.velocity[JACKAL_INDICES[1]], self.velocity[JACKAL_INDICES[3]]])
 
-        return position, velocity, real_force, linear_vel, angular_vel
+        self.linear_vel = WHEEL_RADIUS * 0.5 * (omega_L + omega_R)
+        self.angular_vel = WHEEL_RADIUS / WHEEL_BASE * (omega_R - omega_L)
 
+        return self.position, self.velocity, self.real_force, self.linear_vel, self.angular_vel, self.force_sensor
+    
+    def differential_controller_skid_steer(self, target_linear_vel, target_angular_vel):
+        left_correctionF = 0.08
+        right_correctionF = 0.0
+        left_correctionR = 0.0
+        right_correctionR = 0.08
+
+        # base speed
+        chi = 1.2 # experimentally tuned
+        
+        effective_wheelbase = WHEEL_BASE * chi
+        left_base_speed = ((2 * target_linear_vel) - (target_angular_vel * effective_wheelbase)) / (2 * WHEEL_RADIUS)
+        right_base_speed = ((2 * target_linear_vel) + (target_angular_vel * effective_wheelbase)) / (2 * WHEEL_RADIUS)
+
+
+        # final wheel speeds
+        front_left_speed = left_base_speed - left_correctionF * target_angular_vel
+        rear_left_speed = front_left_speed - left_correctionR * target_angular_vel  
+        front_right_speed = right_base_speed + right_correctionF * target_angular_vel
+        rear_right_speed = front_right_speed + right_correctionR * target_angular_vel
+
+        # 속도 제한
+        max_speed = 1000.0  # 최대 허용 속도
+        front_left_speed = np.clip(front_left_speed, -max_speed, max_speed)
+        front_right_speed = np.clip(front_right_speed, -max_speed, max_speed)
+        rear_left_speed = np.clip(rear_left_speed, -max_speed, max_speed)
+        rear_right_speed = np.clip(rear_right_speed, -max_speed, max_speed)
+
+        print('base speed: ', left_base_speed, right_base_speed)
+        print('correction: ', left_correctionF, right_correctionF, left_correctionR, right_correctionR)
+        print('final speed: ', front_left_speed, front_right_speed, rear_left_speed, rear_right_speed)
+
+        return ArticulationAction(
+            joint_velocities=[front_left_speed, front_right_speed, rear_left_speed, rear_right_speed],
+            joint_indices=JACKAL_INDICES
+        )
+        
     def run(self):
         self.timeline.play()
         reset_needed = False
@@ -187,13 +221,15 @@ class RobotarmController(Node):
                 if reset_needed:
                     self.world.reset()
                     reset_needed = False
+                self.get_robot_state()
 
                 self.robotarm.apply_action(ArticulationAction(joint_positions=self.gripper_target_position, joint_velocities=self.gripper_target_velocity, joint_indices=HANDE_INDICES))
 
                 # self.robotarm.apply_action(ArticulationAction(joint_positions=self.robotarm_target_position, joint_velocities=self.robotarm_target_velocity, joint_indices=UR5_INDICES))
                 self.robotarm.apply_action(ArticulationAction(joint_positions=self.robotarm_target_position, joint_indices=UR5_INDICES))
 
-                self.robotarm.apply_action(self.diff_controller.forward([self.mobile_target_linear, self.mobile_target_angular]))
+                # self.robotarm.apply_action(self.differential_controller_skid_steer(self.mobile_target_linear, self.mobile_target_angular))
+                self.robotarm.apply_action(self.differential_controller_skid_steer(0.0, 0.8))
 
                 self.publish_slave_info()
 
