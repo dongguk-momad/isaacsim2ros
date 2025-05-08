@@ -174,11 +174,11 @@ class RobotarmController(Node):
     def differential_controller_skid_steer(self, target_linear_vel, target_angular_vel):
         left_correctionF = 0.08
         right_correctionF = 0.0
-        left_correctionR = 0.0
-        right_correctionR = 0.08
+        left_correctionR = 0.03
+        right_correctionR = 0.06
 
         # base speed
-        chi = 1.2 # experimentally tuned
+        chi = 1.4 # experimentally tuned
         
         effective_wheelbase = WHEEL_BASE * chi
         left_base_speed = ((2 * target_linear_vel) - (target_angular_vel * effective_wheelbase)) / (2 * WHEEL_RADIUS)
@@ -228,8 +228,8 @@ class RobotarmController(Node):
                 # self.robotarm.apply_action(ArticulationAction(joint_positions=self.robotarm_target_position, joint_velocities=self.robotarm_target_velocity, joint_indices=UR5_INDICES))
                 self.robotarm.apply_action(ArticulationAction(joint_positions=self.robotarm_target_position, joint_indices=UR5_INDICES))
 
-                # self.robotarm.apply_action(self.differential_controller_skid_steer(self.mobile_target_linear, self.mobile_target_angular))
-                self.robotarm.apply_action(self.differential_controller_skid_steer(0.0, 0.8))
+                self.robotarm.apply_action(self.differential_controller_skid_steer(self.mobile_target_linear, self.mobile_target_angular))
+                # self.robotarm.apply_action(self.differential_controller_skid_steer(0.0, 0.5))
 
                 self.publish_slave_info()
 
