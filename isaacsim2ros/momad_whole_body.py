@@ -90,7 +90,7 @@ class RobotarmController(Node):
         self.robotarm.initialize()
         self.gripper.initialize()
 
-        self.robotarm_target_position = [0.0] * 6
+        self.robotarm_target_position = [0.0, -1.0, 1.0, 0.0, 0.0, 0.0]
         self.robotarm_target_velocity = [0.0] * 6
         
         self.gripper_target_position = [0.0] * 2
@@ -99,20 +99,32 @@ class RobotarmController(Node):
         self.mobile_target_angular = 0.0
         self.mobile_target_linear = 0.0
 
-        cube = self.world.scene.add(
+        self.robotarm.set_joint_positions(self.robotarm_target_position, UR5_INDICES)
+        # stabilize
+        for _ in range(40):
+            self.world.step(render=True)
+
+        cube1 = self.world.scene.add(
                 DynamicCuboid(
-                    name="cube",
-                    position=np.array([0.3, 0.3, 0.3]),
-                    prim_path="/World/Cube",
+                    name="cube1",
+                    position=np.array([0.9, -0.1, 0.9]),
+                    prim_path="/World/Cube1",
                     scale=np.array([0.03, 0.03, 0.03]),
                     size=1.0,
-                    color=np.array([0, 0, 1]),
+                    color=np.array([0, 1, 0]),
                 )
         )
 
-        # stabilize
-        for _ in range(20):
-            self.world.step(render=True)
+        cube2 = self.world.scene.add(
+                DynamicCuboid(
+                    name="cube2",
+                    position=np.array([0.9, 0.0, 0.4]),
+                    prim_path="/World/Cube2",
+                    scale=np.array([0.5, 0.5, 0.8]),
+                    size=1.0,
+                    color=np.array([0.05, 0.1, 0.1]),
+                )
+        )
 
     def command_callback(self, msg):
         latency = time.time() - msg.stamp
@@ -197,10 +209,6 @@ class RobotarmController(Node):
         front_right_speed = np.clip(front_right_speed, -max_speed, max_speed)
         rear_left_speed = np.clip(rear_left_speed, -max_speed, max_speed)
         rear_right_speed = np.clip(rear_right_speed, -max_speed, max_speed)
-
-        print('base speed: ', left_base_speed, right_base_speed)
-        print('correction: ', left_correctionF, right_correctionF, left_correctionR, right_correctionR)
-        print('final speed: ', front_left_speed, front_right_speed, rear_left_speed, rear_right_speed)
 
         return ArticulationAction(
             joint_velocities=[front_left_speed, front_right_speed, rear_left_speed, rear_right_speed],
