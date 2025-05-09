@@ -73,8 +73,17 @@ class RobotarmController(Node):
         self.subscription = self.create_subscription(ControlValue, "/master_info", self.command_callback, 1)
         self.publisher = self.create_publisher(ControlValue, "/slave_info", 1)
         self.publisher2 = self.create_publisher(Float32MultiArray, "/force", 1)
-        self.publisher_img = self.create_publisher(
+        self.publisher_img_1 = self.create_publisher(
             CompressedImage, "/mobile_cam/rgb/compressed",  QoSProfile(depth=1)
+        )
+        self.publisher_img_2 = self.create_publisher(
+            CompressedImage, "/hand_cam/rgb/compressed",  QoSProfile(depth=1)
+        )
+        self.publisher_depth_1 = self.create_publisher(
+            CompressedImage, "/mobile_cam/depth/compressed",  QoSProfile(depth=1)
+        )
+        self.publisher_depth_2 = self.create_publisher(
+            CompressedImage, "/hand_cam/depth/compressed",  QoSProfile(depth=1)
         )
 
         # Isaac Sim World 초기화
@@ -116,6 +125,9 @@ class RobotarmController(Node):
         self.cam_hand.initialize()
         self.cam_mobile.initialize()
 
+        self.cam_hand.add_distance_to_image_plane_to_frame()
+        self.cam_mobile.add_distance_to_image_plane_to_frame()
+
         self.robotarm_target_position = [0.0, -1.0, 1.0, 0.0, 0.0, 0.0]
         self.robotarm_target_velocity = [0.0] * 6
         
@@ -152,21 +164,39 @@ class RobotarmController(Node):
                 )
         )
 
-    def publish_mobile_rgb(self, rgb_np):
-        # --- JPEG 압축 (무손실 필요하면 png, but png가 더 느립니다) ---
-        # cv2 expects BGR, so convert once
-        bgr = cv2.cvtColor(rgb_np, cv2.COLOR_RGB2BGR)
-        ok, buf = cv2.imencode(".jpg", bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        if not ok:
-            self.get_logger().error("JPEG encode failed")
-            return
+    def publish_images(self, rgb_hand, rgb_mobile, depth_hand, depth_mobile):
+        """RGB/Depth × 2 프레임을 JPEG로 압축해 퍼블리시 (≈ 2 ms)"""
 
-        msg = CompressedImage()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "mobile_cam"
-        msg.format = "jpeg"
-        msg.data = buf.tobytes()                # 200 ~ 300 KB, 복사  < 1 ms
-        self.publisher_img.publish(msg)
+        enc_param = [int(cv2.IMWRITE_JPEG_QUALITY), 80]   # 한 번만 생성
+        pub_tasks = [
+            # (NumpyFrame, topic_pub, frame_id, colorspace)
+            (rgb_mobile,  self.publisher_img_1,  "mobile_cam", "bgr"),
+            (rgb_hand,    self.publisher_img_2,  "hand_cam",   "bgr"),
+            (depth_mobile,self.publisher_depth_1,"mobile_cam", "gray"),
+            (depth_hand,  self.publisher_depth_2,"hand_cam",   "gray"),
+        ]
+
+        now = self.get_clock().now().to_msg()
+
+        for frame, pub, fid, mode in pub_tasks:
+            if mode == "bgr":                       # RGB → BGR 변환 1 회
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            else:                                   # Depth: 32F → 8U(0-255)
+                frame8 = np.clip(frame, 0, 5.0) * 51  # 5 m → 255
+                frame = frame8.astype(np.uint8)
+
+            ok, buf = cv2.imencode(".jpg", frame, enc_param)
+            if not ok:
+                self.get_logger().error("JPEG encode failed")
+                continue
+
+            msg = CompressedImage()
+            msg.header.stamp   = now
+            msg.header.frame_id = fid
+            msg.format = "jpeg"
+            msg.data   = memoryview(buf).tobytes()   # zero-copy → bytes
+            pub.publish(msg)
+
         
     def command_callback(self, msg):
         latency = time.time() - msg.stamp
@@ -284,10 +314,12 @@ class RobotarmController(Node):
                 self.robotarm.apply_action(self.differential_controller_skid_steer(self.mobile_target_linear, self.mobile_target_angular))
                 # self.robotarm.apply_action(self.differential_controller_skid_steer(0.0, 0.5))
 
-                frame = self.cam_mobile.get_rgb()
-                print(frame.shape)
-                self.publish_mobile_rgb(frame) 
-
+                rgb_hand = self.cam_hand.get_rgb()
+                rgb_mobile = self.cam_mobile.get_rgb()
+                depth_hand = self.cam_hand.get_depth()
+                depth_mobile = self.cam_mobile.get_depth()
+                self.publish_mobile_rgb(rgb_hand, rgb_mobile, depth_hand, depth_mobile) 
+                # print("depth_hand: ", depth_mobile.shape)
                 self.publish_slave_info()
                 t_pub = time.perf_counter()
 
