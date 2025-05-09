@@ -71,7 +71,7 @@ class RobotarmController(Node):
         self.world.scene.add_default_ground_plane()
 
         # ur5_usd_path = "/home/choiyj/Desktop/moma/urhand5_flatten.usd"
-        momad_usd_path = "/home/choiyj/Desktop/momad_test3.usd"
+        momad_usd_path = "/home/choiyj/Desktop/momad_test3_cam.usd"
         add_reference_to_stage(momad_usd_path, "/World")
 
         # SingleManipulator 생성
