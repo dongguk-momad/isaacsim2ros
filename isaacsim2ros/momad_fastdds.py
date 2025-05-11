@@ -13,7 +13,6 @@ from isaacsim.core.api.objects import DynamicCuboid
 from isaacsim.robot.wheeled_robots.robots import WheeledRobot
 from isaacsim.robot.wheeled_robots.controllers.differential_controller import DifferentialController
 from isaacsim.sensors.camera import Camera
-from isaacsim.core.prims import RigidPrim
 from isaacsim.core.api import PhysicsContext
 
 # ROS 2 관련
@@ -25,8 +24,8 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from std_msgs.msg import Float32, Float32MultiArray
 from sensor_msgs.msg import Image
 import cv2
-from cv_bridge import CvBridge
 from momad_msgs.msg import ControlValue, GripperValue
+from cv_bridge import CvBridge
 
 # Isaac Sim ROS 2 Bridge 활성화
 enable_extension("isaacsim.ros2.bridge")
@@ -92,7 +91,7 @@ class RobotarmController(Node):
 
         # Isaac Sim World 초기화
         self.timeline = omni.timeline.get_timeline_interface()
-        self.world = World(stage_units_in_meters=1.0, physics_dt=1/240, rendering_dt=1/30)
+        self.world = World(stage_units_in_meters=1.0, physics_dt=1/240)
         self.world.scene.add_default_ground_plane()
 
         # ur5_usd_path = "/home/choiyj/Desktop/moma/urhand5_flatten.usd"
@@ -146,23 +145,26 @@ class RobotarmController(Node):
         for _ in range(40):
             self.world.step(render=True)
 
-        hole_usd_path = "/home/choiyj/Desktop/hole_o.usd"
-        add_reference_to_stage(hole_usd_path, "/World/hole_o")
-        hole = RigidPrim(
-            prim_paths_expr="/World/hole_o",
-            name="hole_o",
-            positions=np.array([[0.9, 0.05, 0.01]]),
-            scales=[np.ones(3) * [1, 1, 2]]
+        cube1 = self.world.scene.add(
+                DynamicCuboid(
+                    name="cube1",
+                    position=np.array([0.9, -0.1, 0.9]),
+                    prim_path="/World/Cube1",
+                    scale=np.array([0.03, 0.03, 0.03]),
+                    size=1.0,
+                    color=np.array([0, 1, 0]),
+                )
         )
 
-        peg_usd_path = "/home/choiyj/Desktop/peg_o.usd"
-        add_reference_to_stage(peg_usd_path, "/World/peg_o")
-        peg = RigidPrim(
-            prim_paths_expr="/World/peg_o",
-            name="peg_o",
-            positions=np.array([[0.9, 0.05, 0.6]]),
-            scales=[np.ones(3) * 1.0],
-
+        cube2 = self.world.scene.add(
+                DynamicCuboid(
+                    name="cube2",
+                    position=np.array([0.9, 0.0, 0.4]),
+                    prim_path="/World/Cube2",
+                    scale=np.array([0.5, 0.5, 0.8]),
+                    size=1.0,
+                    color=np.array([0.05, 0.1, 0.1]),
+                )
         )
 
     def publish_images(self, rgb_hand, rgb_mobile, depth_hand, depth_mobile):
