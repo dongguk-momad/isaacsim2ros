@@ -32,7 +32,7 @@ from momad_msgs.msg import ControlValue, GripperValue
 enable_extension("isaacsim.ros2.bridge")
 simulation_app.update()
 simulation_app.set_setting("/rtx/pathtracing/enable", False)
-simulation_app.set_setting("/rtx/post/dlss/enable",   True)
+# simulation_app.set_setting("/rtx/post/dlss/enable",   True)
 
 
 MAX_GRIPPER_POS = 0.025
@@ -92,7 +92,7 @@ class RobotarmController(Node):
 
         # Isaac Sim World 초기화
         self.timeline = omni.timeline.get_timeline_interface()
-        self.world = World(stage_units_in_meters=1.0, physics_dt=1/240, rendering_dt=1/30)
+        self.world = World(stage_units_in_meters=1.0, physics_dt=1/240)
         self.world.scene.add_default_ground_plane()
 
         # ur5_usd_path = "/home/choiyj/Desktop/moma/urhand5_flatten.usd"
@@ -149,7 +149,7 @@ class RobotarmController(Node):
         hole_usd_path = "/home/choiyj/Desktop/hole_o.usd"
         add_reference_to_stage(hole_usd_path, "/World/hole_o")
         hole = RigidPrim(
-            prim_paths_expr="/World/hole_o",
+            prim_paths_expr="/World/hole_o",                
             name="hole_o",
             positions=np.array([[0.9, 0.05, 0.01]]),
             scales=[np.ones(3) * [1, 1, 2]]
