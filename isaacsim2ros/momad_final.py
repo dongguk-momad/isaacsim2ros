@@ -1,5 +1,5 @@
 from omni.isaac.kit import SimulationApp
-simulation_app = SimulationApp({"headless": False})  # GUI를 띄우고 실행하려면 False
+simulation_app = SimulationApp({"headless": True})  # GUI를 띄우고 실행하려면 False
 
 import omni
 from isaacsim.core.api import World
@@ -88,7 +88,7 @@ class RobotarmController(Node):
 
         # Isaac Sim World 초기화
         self.timeline = omni.timeline.get_timeline_interface()
-        self.world = World(stage_units_in_meters=1.0, physics_dt=1/240, rendering_dt=1/30)
+        self.world = World(stage_units_in_meters=1.0, physics_dt=1/240, rendering_dt=1/25)
         self.world.scene.add_default_ground_plane()
 
         # ur5_usd_path = "/home/choiyj/Desktop/moma/urhand5_flatten.usd"
@@ -105,14 +105,12 @@ class RobotarmController(Node):
 
         self.cam_mobile = Camera(
             prim_path="/World/jackal_basic/base_link/RSD455/Camera_Pseudo_Depth",
-            frequency=30,
-            resolution=(1280, 720), 
+            resolution=(800, 600), 
         )
 
         self.cam_hand = Camera(
             prim_path="/World/hande/tool0/RSD455/Camera_Pseudo_Depth",
-            frequency=30,
-            resolution=(1280, 720), 
+            resolution=(800, 600), 
         )
 
         # 월드 초기화
@@ -165,54 +163,67 @@ class RobotarmController(Node):
         )
 
     def publish_images(self, rgb_hand, rgb_mobile, depth_hand, depth_mobile):
-        """RGB/Depth × 2 프레임을 JPEG로 압축해 퍼블리시 (최적화된 성능)"""
-        # Use a lower JPEG quality for faster encoding
-        enc_param = [int(cv2.IMWRITE_JPEG_QUALITY), 75]
-        
-        # Get current timestamp once for all messages
+        """RGB/Depth × 2 프레임을 JPEG로 압축해 퍼블리시"""
+        t_total_start = time.perf_counter() # 함수 전체 시작 시간
+
+        t_get_data_start = time.perf_counter()
+        # 이미지 데이터는 이미 인자로 받아오므로, 여기서는 준비 과정이 있다면 측정
+        # 예: frames_raw = [rgb_mobile, rgb_hand, depth_mobile, depth_hand]
+        t_get_data_end = time.perf_counter()
+        get_data_time = t_get_data_end - t_get_data_start
+
+        enc_param = [int(cv2.IMWRITE_JPEG_QUALITY), 60] # self.jpeg_quality 사용 (예: 80)
+        pub_tasks = [
+            (rgb_mobile, self.publisher_img_1, "mobile_cam", "bgr"),
+            (rgb_hand, self.publisher_img_2, "hand_cam", "bgr"),
+            (depth_mobile, self.publisher_depth_1, "mobile_cam", "gray"),
+            (depth_hand, self.publisher_depth_2, "hand_cam", "gray"),
+        ]
+
         now = self.get_clock().now().to_msg()
 
-        # Process RGB images more efficiently
-        for frame, pub, fid in [
-            (rgb_mobile, self.publisher_img_1, "mobile_cam"),
-            (rgb_hand, self.publisher_img_2, "hand_cam"),
-        ]:
-            # Use faster BGR conversion
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            
-            # Encode as JPEG with optimized settings
-            ok, buf = cv2.imencode(".jpg", frame, enc_param)
+        total_preprocessing_time = 0
+        total_imencode_time = 0
+        total_ros_publish_time = 0
+
+        for frame, pub, fid, mode in pub_tasks:
+            t_prep_start = time.perf_counter()
+            if mode == "bgr":
+                frame_processed = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            else:  # "gray" (Depth)
+                frame8 = np.clip(frame, 0, 5.0) * 51
+                frame_processed = frame8.astype(np.uint8)
+            t_prep_end = time.perf_counter()
+            total_preprocessing_time += (t_prep_end - t_prep_start)
+
+            t_encode_start = time.perf_counter()
+            ok, buf = cv2.imencode(".jpg", frame_processed, enc_param)
+            t_encode_end = time.perf_counter()
+            total_imencode_time += (t_encode_end - t_encode_start)
+
             if not ok:
+                self.get_logger().error(f"JPEG encode failed for {fid}")
                 continue
 
-            # Create and publish image message (zero-copy)
+            t_ros_pub_start = time.perf_counter()
             msg = CompressedImage()
             msg.header.stamp = now
             msg.header.frame_id = fid
             msg.format = "jpeg"
             msg.data = memoryview(buf).tobytes()
             pub.publish(msg)
+            t_ros_pub_end = time.perf_counter()
+            total_ros_publish_time += (t_ros_pub_end - t_ros_pub_start)
         
-        # Process depth images more efficiently
-        for frame, pub, fid in [
-            (depth_mobile, self.publisher_depth_1, "mobile_cam"),
-            (depth_hand, self.publisher_depth_2, "hand_cam"),
-        ]:
-            # Faster depth normalization
-            frame = np.clip(frame * 51.0, 0, 255).astype(np.uint8)
-            
-            # Encode as JPEG with optimized settings
-            ok, buf = cv2.imencode(".jpg", frame, enc_param)
-            if not ok:
-                continue
-
-            # Create and publish image message (zero-copy)
-            msg = CompressedImage()
-            msg.header.stamp = now
-            msg.header.frame_id = fid
-            msg.format = "jpeg"
-            msg.data = memoryview(buf).tobytes()
-            pub.publish(msg)
+        t_total_end = time.perf_counter() # 함수 전체 종료 시간
+        
+        # 상세 시간 로깅 (매번 로깅하면 너무 많으니, 가끔 확인하거나 평균값을 내는 용도로 사용)
+        # if self.loop_counter % 30 == 0: # 예: 30프레임마다 한 번씩 로깅
+        self.get_logger().info(
+            f"[PubProfile] Total: {t_total_end - t_total_start:.5f}s | "
+            f"GetData: {get_data_time:.5f}s | Preproc: {total_preprocessing_time:.5f}s | "
+            f"Encode: {total_imencode_time:.5f}s | ROSPub: {total_ros_publish_time:.5f}s"
+        )
 
         
     def command_callback(self, msg):
@@ -254,31 +265,23 @@ class RobotarmController(Node):
         self.publisher.publish(msg)
 
     def get_robot_state(self):
-        """Get the current state of the robot with optimized performance."""
-        # Get joint states all at once for better performance
-        joint_state = self.robotarm.get_joints_state(joint_indices=WHOLE_INDICES)
-        self.position = joint_state.positions.tolist()
-        self.velocity = joint_state.velocities.tolist()
-        force = joint_state.efforts.tolist()
-        
-        # More efficient force calculation
+        # Get the gripper state (position, velocity, force)
+        self.position = self.robotarm.get_joint_positions(joint_indices=WHOLE_INDICES).tolist()
+        self.velocity = self.robotarm.get_joint_velocities(joint_indices=WHOLE_INDICES).tolist()
+        force = self.robotarm.get_measured_joint_efforts(joint_indices=WHOLE_INDICES).tolist()
         gravity = self.gripper.get_generalized_gravity_forces(joint_indices=WHOLE_INDICES).tolist()[0]
         cor = self.gripper.get_coriolis_and_centrifugal_forces(joint_indices=WHOLE_INDICES).tolist()[0]
         self.real_force = [f - g - c for f, g, c in zip(force, gravity, cor)]
 
-        # Get only specific force sensor readings
-        self.force_sensor = self.robotarm.get_measured_joint_forces(joint_indices=[UR5_INDICES[5]]).tolist()
-        force_sensor_all = [0.0] * len(WHOLE_INDICES)
-        force_sensor_all[UR5_INDICES[5]] = self.force_sensor[0]
+        self.force_sensor = self.robotarm.get_measured_joint_forces(joint_indices=WHOLE_INDICES).tolist()
 
-        # Calculate wheel velocities more efficiently
-        omega_L = 0.5 * (self.velocity[JACKAL_INDICES[0]] + self.velocity[JACKAL_INDICES[2]])
-        omega_R = 0.5 * (self.velocity[JACKAL_INDICES[1]] + self.velocity[JACKAL_INDICES[3]])
+        omega_L = np.mean([self.velocity[JACKAL_INDICES[0]], self.velocity[JACKAL_INDICES[2]]])
+        omega_R = np.mean([self.velocity[JACKAL_INDICES[1]], self.velocity[JACKAL_INDICES[3]]])
 
         self.linear_vel = WHEEL_RADIUS * 0.5 * (omega_L + omega_R)
         self.angular_vel = WHEEL_RADIUS / WHEEL_BASE * (omega_R - omega_L)
 
-        return self.position, self.velocity, self.real_force, self.linear_vel, self.angular_vel, force_sensor_all
+        return self.position, self.velocity, self.real_force, self.linear_vel, self.angular_vel, self.force_sensor
     
     def differential_controller_skid_steer(self, target_linear_vel, target_angular_vel):
         left_correctionF = 0.08
@@ -313,90 +316,45 @@ class RobotarmController(Node):
         )
         
     def run(self):
-        """Main execution loop with optimizations for higher frequency performance."""
         self.timeline.play()
         reset_needed = False
-        
-        # Variables for timing and frequency control
-        prev_image_time = 0
-        prev_status_time = 0
-        target_image_freq = 20  # Target 20Hz for camera images
-        target_status_freq = 20  # Target 20Hz for status updates
-        frame_count = 0
-        last_fps_time = time.perf_counter()
-        status_interval = 1.0 / target_status_freq
-        image_interval = 1.0 / target_image_freq
 
         while simulation_app.is_running():
             t0 = time.perf_counter()
-            
-            # Render only every other frame to save processing time
-            self.world.step(render=frame_count % 2 == 0)
-            
-            # Process ROS messages without blocking
+            self.world.step(render=True)
+            t_step = time.perf_counter()
             rclpy.spin_once(self, timeout_sec=0.0)
+            t_ros = time.perf_counter()
 
-            # Check if simulation needs reset
             if self.world.is_stopped() and not reset_needed:
                 reset_needed = True
-                
-            # If simulation is running
             if self.world.is_playing():
-                # Reset if needed
                 if reset_needed:
                     self.world.reset()
                     reset_needed = False
-                
-                # Apply control commands to robot (always do this)
-                self.robotarm.apply_action(ArticulationAction(
-                    joint_positions=self.gripper_target_position, 
-                    joint_velocities=self.gripper_target_velocity, 
-                    joint_indices=HANDE_INDICES
-                ))
-                self.robotarm.apply_action(ArticulationAction(
-                    joint_positions=self.robotarm_target_position, 
-                    joint_indices=UR5_INDICES
-                ))
-                self.robotarm.apply_action(self.differential_controller_skid_steer(
-                    self.mobile_target_linear, 
-                    self.mobile_target_angular
-                ))
-                
-                current_time = time.perf_counter()
-                
-                # Publish slave_info at target frequency
-                if current_time - prev_status_time >= status_interval:
-                    # Get current robot state
-                    self.get_robot_state()
-                    # Publish robot status
-                    self.publish_slave_info()
-                    prev_status_time = current_time
-                
-                # Capture and publish camera images at target frequency
-                if current_time - prev_image_time >= image_interval:
-                    rgb_hand = self.cam_hand.get_rgb()
-                    rgb_mobile = self.cam_mobile.get_rgb()
-                    depth_hand = self.cam_hand.get_depth()
-                    depth_mobile = self.cam_mobile.get_depth()
-                    self.publish_images(rgb_hand, rgb_mobile, depth_hand, depth_mobile)
-                    prev_image_time = current_time
-                
-                # Calculate and log FPS every 5 seconds
-                frame_count += 1
-                if frame_count % 100 == 0:
-                    now = time.perf_counter()
-                    elapsed = now - last_fps_time
-                    if elapsed >= 5.0:
-                        fps = 100 / elapsed
-                        print(f"Simulation running at {fps:.2f} Hz")
-                        last_fps_time = now
+                self.get_robot_state()
 
-            # Calculate available time for sleep to maintain physics step rate
-            elapsed = time.perf_counter() - t0
-            if elapsed < 1/240:  # If we have time before next physics step
-                time.sleep(max(0, (1/240) - elapsed))
+                self.robotarm.apply_action(ArticulationAction(joint_positions=self.gripper_target_position, joint_velocities=self.gripper_target_velocity, joint_indices=HANDE_INDICES))
 
-        # Clean up when simulation ends
+                # self.robotarm.apply_action(ArticulationAction(joint_positions=self.robotarm_target_position, joint_velocities=self.robotarm_target_velocity, joint_indices=UR5_INDICES))
+                self.robotarm.apply_action(ArticulationAction(joint_positions=self.robotarm_target_position, joint_indices=UR5_INDICES))
+
+                self.robotarm.apply_action(self.differential_controller_skid_steer(self.mobile_target_linear, self.mobile_target_angular))
+                # self.robotarm.apply_action(self.differential_controller_skid_steer(0.0, 0.5))
+
+                rgb_hand = self.cam_hand.get_rgb()
+                rgb_mobile = self.cam_mobile.get_rgb()
+                depth_hand = self.cam_hand.get_depth()
+                depth_mobile = self.cam_mobile.get_depth()
+                self.publish_images(rgb_hand, rgb_mobile, depth_hand, depth_mobile) 
+                # print("depth_hand: ", depth_mobile.shape)
+                self.publish_slave_info()
+                t_pub = time.perf_counter()
+
+            print(f"dt step={t_step-t0:.4f}s  ros={t_ros-t_step:.4f}s  "
+                  f"pub={t_pub-t_ros:.4f}s  total={t_pub-t0:.4f}s")
+
+        # 시뮬레이션 종료
         self.timeline.stop()
         self.destroy_node()
         simulation_app.close()
