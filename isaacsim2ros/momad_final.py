@@ -32,7 +32,7 @@ from momad_msgs.msg import ControlValue, GripperValue
 enable_extension("isaacsim.ros2.bridge")
 simulation_app.update()
 simulation_app.set_setting("/rtx/pathtracing/enable", False)
-# simulation_app.set_setting("/rtx/post/dlss/enable",   True)
+simulation_app.set_setting("/rtx/post/dlss/enable",   True)
 
 
 MAX_GRIPPER_POS = 0.025
@@ -92,11 +92,11 @@ class RobotarmController(Node):
 
         # Isaac Sim World 초기화
         self.timeline = omni.timeline.get_timeline_interface()
-        self.world = World(stage_units_in_meters=1.0, physics_dt=1/240)
+        self.world = World(stage_units_in_meters=1.0, physics_dt=1.0 / 300.0)
         self.world.scene.add_default_ground_plane()
 
         # ur5_usd_path = "/home/choiyj/Desktop/moma/urhand5_flatten.usd"
-        momad_usd_path = "/home/choiyj/Desktop/momad_test3_cam.usd"
+        momad_usd_path = "/home/choiyj/Desktop/momad_test3_cam_friction.usd"
         add_reference_to_stage(momad_usd_path, "/World")
 
         # SingleManipulator 생성
@@ -109,13 +109,11 @@ class RobotarmController(Node):
 
         self.cam_mobile = Camera(
             prim_path="/World/jackal_basic/base_link/RSD455/Camera_Pseudo_Depth",
-            frequency=30,
             resolution=(1280, 720), 
         )
 
         self.cam_hand = Camera(
             prim_path="/World/hande/tool0/RSD455/Camera_Pseudo_Depth",
-            frequency=30,
             resolution=(1280, 720), 
         )
 
@@ -132,7 +130,7 @@ class RobotarmController(Node):
         self.cam_hand.add_distance_to_image_plane_to_frame()
         self.cam_mobile.add_distance_to_image_plane_to_frame()
 
-        self.robotarm_target_position = [0.0, -1.0, 1.0, 0.0, 0.0, 0.0]
+        self.robotarm_target_position = [0.0, -1.0, 1.3, 0.0, 0.0, 0.0]
         self.robotarm_target_velocity = [0.0] * 6
         
         self.gripper_target_position = [0.0] * 2
@@ -146,21 +144,21 @@ class RobotarmController(Node):
         for _ in range(40):
             self.world.step(render=True)
 
-        hole_usd_path = "/home/choiyj/Desktop/hole_o.usd"
-        add_reference_to_stage(hole_usd_path, "/World/hole_o")
+        hole_usd_path = "/home/choiyj/Desktop/hole_o_30.usd"
+        add_reference_to_stage(hole_usd_path, "/World/hole_o_30")
         hole = RigidPrim(
-            prim_paths_expr="/World/hole_o",                
-            name="hole_o",
-            positions=np.array([[0.9, 0.05, 0.01]]),
-            scales=[np.ones(3) * [1, 1, 2]]
+            prim_paths_expr="/World/hole_o_30",                
+            name="hole_o_30",
+            positions=np.array([[0.95, 0.05, 0.00]]),
+            scales=[np.ones(3) * 1.0]
         )
 
-        peg_usd_path = "/home/choiyj/Desktop/peg_o.usd"
-        add_reference_to_stage(peg_usd_path, "/World/peg_o")
+        peg_usd_path = "/home/choiyj/Desktop/peg_o_30.usd"
+        add_reference_to_stage(peg_usd_path, "/World/peg_o_30")
         peg = RigidPrim(
-            prim_paths_expr="/World/peg_o",
-            name="peg_o",
-            positions=np.array([[0.9, 0.05, 0.6]]),
+            prim_paths_expr="/World/peg_o_30",
+            name="peg_o_30",
+            positions=np.array([[0.95, 0.05, 0.8]]),
             scales=[np.ones(3) * 1.0],
 
         )
@@ -192,20 +190,24 @@ class RobotarmController(Node):
         self.publisher_depth_1.publish(depth_mobile_msg)
 
         overall_end_time = time.perf_counter()
-        self.get_logger().info(f"Total publish_images time: {overall_end_time - overall_start_time:.4f}s\n")
+        # self.get_logger().info(f"Total publish_images time: {overall_end_time - overall_start_time:.4f}s\n")
         
     def command_callback(self, msg):
         latency = time.time() - msg.stamp
         print("ws latency: ", latency)
         # pass
-        self.robotarm_target_position = msg.robotarm_state.position
+        robotarm_target_position_deg = msg.robotarm_state.position
         self.robotarm_target_velocity = msg.robotarm_state.velocity
+        robotarm_target_position_deg[5] *=-1
+        robotarm_target_position_deg[4] -= 720
         
-        for i in range(len(self.robotarm_target_position)):
-            self.robotarm_target_position[i] = np.clip(self.robotarm_target_position[i]*np.pi/180, -3.14, 3.14)
+        for i in range(len(robotarm_target_position_deg)):
+            self.robotarm_target_position[i] = np.clip(robotarm_target_position_deg[i]*np.pi/180, -3.14, 3.14)
+        
+        # print("robotarm_target_position: ", self.robotarm_target_position)
 
         self.gripper_target_position = msg.gripper_state.position
-        self.gripper_target_velocity = msg.gripper_state.velocity
+        self.gripper_target_velocity = [msg.gripper_state.velocity[0]]*2
 
         for i in range(len(self.gripper_target_position)):
             self.gripper_target_position[i] = np.clip(self.gripper_target_position[i], 0, 1) * MAX_GRIPPER_POS
@@ -319,8 +321,8 @@ class RobotarmController(Node):
                 self.publish_slave_info()
                 t_pub = time.perf_counter()
 
-            print(f"dt step={t_step-t0:.4f}s  ros={t_ros-t_step:.4f}s  "
-                  f"pub={t_pub-t_ros:.4f}s  total={t_pub-t0:.4f}s")
+            # print(f"dt step={t_step-t0:.4f}s  ros={t_ros-t_step:.4f}s  "
+            #       f"pub={t_pub-t_ros:.4f}s  total={t_pub-t0:.4f}s")
 
         # 시뮬레이션 종료
         self.timeline.stop()
