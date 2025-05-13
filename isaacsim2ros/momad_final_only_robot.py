@@ -144,25 +144,6 @@ class RobotarmController(Node):
         for _ in range(40):
             self.world.step(render=True)
 
-        # hole_usd_path = "/home/choiyj/Desktop/hole_o_30.usd"
-        # add_reference_to_stage(hole_usd_path, "/World/hole_o_30")
-        # hole = RigidPrim(
-        #     prim_paths_expr="/World/hole_o_30",                
-        #     name="hole_o_30",
-        #     positions=np.array([[0.95, 0.05, 0.00]]),
-        #     scales=[np.ones(3) * 1.0]
-        # )
-
-        # peg_usd_path = "/home/choiyj/Desktop/peg_o_30.usd"
-        # add_reference_to_stage(peg_usd_path, "/World/peg_o_30")
-        # peg = RigidPrim(
-        #     prim_paths_expr="/World/peg_o_30",
-        #     name="peg_o_30",
-        #     positions=np.array([[0.95, 0.05, 0.8]]),
-        #     scales=[np.ones(3) * 1.0],
-
-        # )
-
     def publish_images(self, rgb_hand, rgb_mobile, depth_hand, depth_mobile):
         """RGB/Depth × 2 프레임을 압축 없이 퍼블리시"""
         overall_start_time = time.perf_counter()

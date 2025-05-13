@@ -34,6 +34,7 @@ simulation_app.update()
 simulation_app.set_setting("/rtx/pathtracing/enable", False)
 simulation_app.set_setting("/rtx/post/dlss/enable",   True)
 
+MODE = "PEG_IN_HOLE"  # "PEG_IN_HOLE" or "ONLY_ROBOT"
 
 MAX_GRIPPER_POS = 0.025
 
@@ -144,6 +145,12 @@ class RobotarmController(Node):
         for _ in range(40):
             self.world.step(render=True)
 
+        if MODE == "PEG_IN_HOLE":
+            self.add_object_peginhole()
+        elif MODE == "ONLY_ROBOT":
+            pass
+
+    def add_object_peginhole(self):
         hole_usd_path = "/home/choiyj/Desktop/hole_o_30.usd"
         add_reference_to_stage(hole_usd_path, "/World/hole_o_30")
         hole = RigidPrim(
