@@ -1,5 +1,11 @@
 from omni.isaac.kit import SimulationApp
-simulation_app = SimulationApp({"headless": False})  # GUI를 띄우고 실행하려면 False
+
+config = {
+    "headless": False,
+    "renderer": "RaytracedLighting",
+    "anti_aliasing": 0,
+}
+simulation_app = SimulationApp(config)  # GUI를 띄우고 실행하려면 False
 
 import omni
 from isaacsim.core.api import World
@@ -8,7 +14,7 @@ from isaacsim.storage.native import get_assets_root_path
 from isaacsim.core.utils.extensions import enable_extension
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.utils.types import ArticulationAction
-from isaacsim.core.prims import Articulation
+from isaacsim.core.prims import Articulation, XFormPrim
 from isaacsim.core.api.objects import DynamicCuboid
 from isaacsim.robot.wheeled_robots.robots import WheeledRobot
 from isaacsim.robot.wheeled_robots.controllers.differential_controller import DifferentialController
@@ -31,8 +37,11 @@ from momad_msgs.msg import ControlValue, GripperValue
 # Isaac Sim ROS 2 Bridge 활성화
 enable_extension("isaacsim.ros2.bridge")
 simulation_app.update()
-simulation_app.set_setting("/rtx/pathtracing/enable", False)
-simulation_app.set_setting("/rtx/post/dlss/enable",   True)
+simulation_app.set_setting("/rtx/post/aa/op", 3)
+simulation_app.set_setting("/rtx-defaults/post/dlss/execMode", 0)
+simulation_app.set_setting("/rtx/post/dlss/execMode", 0)
+simulation_app.set_setting("/rtx-transient/dlssg/enabled", True)
+
 
 MODE = "PEG_IN_HOLE"  # "PEG_IN_HOLE" or "ONLY_ROBOT"
 
@@ -94,29 +103,34 @@ class RobotarmController(Node):
         # Isaac Sim World 초기화
         self.timeline = omni.timeline.get_timeline_interface()
         self.world = World(stage_units_in_meters=1.0, physics_dt=1.0 / 300.0)
-        self.world.scene.add_default_ground_plane()
 
         # ur5_usd_path = "/home/choiyj/Desktop/moma/urhand5_flatten.usd"
-        momad_usd_path = "/home/choiyj/Desktop/momad_test3_cam_friction.usd"
-        add_reference_to_stage(momad_usd_path, "/World")
+        momad_usd_path = "/home/choiyj/Desktop/momad_test3_cam_test.usd"
+        add_reference_to_stage(momad_usd_path, "/World/robot")
+
+        referenced_asset_prim = XFormPrim(
+            prim_paths_expr="/World/robot",
+            translations=np.array([[0.0, 0.0, 1.05],[0.0, 0.0, 1.05],[0.0, 0.0, 1.05]]),
+        )
 
         # SingleManipulator 생성
         self.robotarm = SingleManipulator(
-            prim_path="/World/ur5",
-            end_effector_prim_path="/World/ur5/wrist_3_link/flange",  # UR5의 엔드이펙터 링크 이름
+            prim_path="/World/robot/ur5",
+            end_effector_prim_path="/World/robot/ur5/wrist_3_link/flange",  # UR5의 엔드이펙터 링크 이름
             name="ur5",
         )
-        self.gripper = Articulation("/World/hande")
+        self.gripper = Articulation("/World/robot/hande")
 
         self.cam_mobile = Camera(
-            prim_path="/World/jackal_basic/base_link/RSD455/Camera_Pseudo_Depth",
+            prim_path="/World/robot/jackal_basic/base_link/RSD455/Camera_Pseudo_Depth",
             resolution=(1280, 720), 
         )
 
         self.cam_hand = Camera(
-            prim_path="/World/hande/tool0/RSD455/Camera_Pseudo_Depth",
+            prim_path="/World/robot/hande/tool0/RSD455/Camera_Pseudo_Depth",
             resolution=(1280, 720), 
         )
+        self.world.scene.add_default_ground_plane()
 
         # 월드 초기화
         # self.world.scene.add_default_ground_plane()
@@ -172,31 +186,26 @@ class RobotarmController(Node):
 
     def publish_images(self, rgb_hand, rgb_mobile, depth_hand, depth_mobile):
         """RGB/Depth × 2 프레임을 압축 없이 퍼블리시"""
-        overall_start_time = time.perf_counter()
-        
-        current_stamp = self.get_clock().now().to_msg()
-
         # RGB 이미지 퍼블리시
         rgb_hand_msg = self.bridge.cv2_to_imgmsg(rgb_hand, encoding="rgb8")
-        rgb_hand_msg.header.stamp = current_stamp
+        rgb_hand_msg.header.stamp = self.get_clock().now().to_msg() 
         rgb_hand_msg.header.frame_id = "hand_cam"
         self.publisher_img_2.publish(rgb_hand_msg)
         rgb_mobile_msg = self.bridge.cv2_to_imgmsg(rgb_mobile, encoding="rgb8")
-        rgb_mobile_msg.header.stamp = current_stamp
+        rgb_mobile_msg.header.stamp = self.get_clock().now().to_msg() 
         rgb_mobile_msg.header.frame_id = "mobile_cam"
         self.publisher_img_1.publish(rgb_mobile_msg)
 
         # Depth 이미지 퍼블리시
         depth_hand_msg = self.bridge.cv2_to_imgmsg(depth_hand, encoding="32FC1")
-        depth_hand_msg.header.stamp = current_stamp
+        depth_hand_msg.header.stamp = self.get_clock().now().to_msg() 
         depth_hand_msg.header.frame_id = "hand_cam"
         self.publisher_depth_2.publish(depth_hand_msg)
         depth_mobile_msg = self.bridge.cv2_to_imgmsg(depth_mobile, encoding="32FC1")
-        depth_mobile_msg.header.stamp = current_stamp
+        depth_mobile_msg.header.stamp = self.get_clock().now().to_msg() 
         depth_mobile_msg.header.frame_id = "mobile_cam"
         self.publisher_depth_1.publish(depth_mobile_msg)
 
-        overall_end_time = time.perf_counter()
         # self.get_logger().info(f"Total publish_images time: {overall_end_time - overall_start_time:.4f}s\n")
         
     def command_callback(self, msg):
