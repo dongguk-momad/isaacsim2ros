@@ -2,10 +2,10 @@ from omni.isaac.kit import SimulationApp
 
 config = {
     "headless": False,
-    "renderer": "RaytracedLighting", # "Raytracer" -> "RaytracedLighting" (표준 옵션명)
-    "anti_aliasing": 0, # 나중에 코드에서 DLSS로 변경됨
+    "renderer": "RaytracedLighting",
+    "anti_aliasing": 0, 
 }
-simulation_app = SimulationApp(config)  # GUI를 띄우고 실행하려면 False
+simulation_app = SimulationApp(config)
 
 import omni
 from isaacsim.core.api import World
@@ -27,17 +27,14 @@ import time
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy # QoSProfile 등 임포트
-from std_msgs.msg import Float32, Float32MultiArray, Header # 신호용으로 Header 메시지 사용
-# from sensor_msgs.msg import Image # SHM 사용으로 더 이상 필요 없음
-# import cv2 # Isaac Sim 측에서는 cv2 직접 사용 안 함 (NumPy 바로 사용)
-# from cv_bridge import CvBridge # SHM 사용으로 더 이상 필요 없음
-from momad_msgs.msg import ControlValue, GripperValue # 사용자 정의 메시지
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from std_msgs.msg import Float32, Float32MultiArray, Header
+from momad_msgs.msg import ControlValue, GuiValue
 
 # 공유 메모리 관련
 from multiprocessing import shared_memory
-import signal # SHM 정리를 위해 추가
-import atexit # SHM 정리를 위해 추가
+import signal
+import atexit
 
 # Isaac Sim ROS 2 Bridge 활성화
 enable_extension("isaacsim.ros2.bridge")
@@ -106,35 +103,30 @@ for key in SHM_CONFIG:
 
 class RobotarmController(Node):
     def __init__(self):
-        super().__init__("robotarm_controller_shm") # 노드 이름 변경 (선택적)
+        super().__init__("robotarm_controller_shm")
         
         self.target_position = [0.0, -1.5, 1.5, 0.0, 0.0, 0.0, 0.0, 0.0]
         self.subscription = self.create_subscription(ControlValue, "/master_info", self.command_callback, 1)
-        self.publisher = self.create_publisher(ControlValue, "/slave_info", 1)
-        self.publisher2 = self.create_publisher(Float32MultiArray, "/force", 1)
+        self.publisher_control = self.create_publisher(ControlValue, "/slave_info", 1)
+        self.publisher_gui = self.create_publisher(GuiValue, "/isaacsim_to_gui", 1)
 
         # --- SHM 및 신호용 Publisher 초기화 ---
         self.shm_segments = {} # 생성된 SHM 객체 저장
         self.shm_np_arrays = {} # SHM에 매핑된 NumPy 배열 저장
         self._init_shared_memory()
 
-        # 이미지가 SHM에 준비되었음을 알리는 신호용 Publisher (std_msgs/Header 사용)
-        # Header 메시지의 stamp 필드에 이미지 캡처 시간을 기록
-        # frame_id 필드에 "new_images_ready"와 같은 문자열을 넣어 신호로 사용 가능
         self.image_signal_publisher = self.create_publisher(Header, "/isaac_image_signal", 10)
 
         # Isaac Sim World 초기화
         self.timeline = omni.timeline.get_timeline_interface()
-        # physics_dt를 이전 FPS(15~18)보다 훨씬 높게 설정 (예: 60Hz, 120Hz, 또는 그 이상)
-        # FastAPI 처리 루프가 약 20~25FPS (0.04~0.05초 간격)이므로, Isaac Sim은 더 빠르게 이미지를 생성할 수 있어야 함
-        self.world = World(stage_units_in_meters=1.0) # 예: 60Hz
+        self.world = World(stage_units_in_meters=1.0, physics_dt=1/250)
 
         momad_usd_path = "/home/choiyj/Desktop/momad_test3_cam_test.usd" # USD 경로 확인 필요
         add_reference_to_stage(momad_usd_path, "/World/robot")
 
         referenced_asset_prim = XFormPrim(
             prim_paths_expr="/World/robot",
-            translations=np.array([[0.0, 0.0, 1.05],[0.0, 0.0, 1.05],[0.0, 0.0, 1.05]]),
+            translations=np.array([[0.0, 0.0, 0.55],[0.0, 0.0, 0.55],[0.0, 0.0, 0.55]]),
         )
 
         self.robotarm = SingleManipulator(
@@ -169,6 +161,11 @@ class RobotarmController(Node):
         self.gripper_target_velocity = [0.0] * 2 
         self.mobile_target_angular = 0.0
         self.mobile_target_linear = 0.0
+
+        self.position = [0.0] * 12
+        self.force_sensor = [[0.0] * 6]*10
+        self.cartesian_position = [0.0, 0.0, 0.0]
+        self.cartesian_orientation = [0.0, 0.0, 0.0, 1.0]
 
         self.robotarm.set_joint_positions(self.robotarm_target_position, UR5_INDICES)
         for _ in range(40): # 안정화 시간
@@ -230,14 +227,13 @@ class RobotarmController(Node):
              simulation_app.close() # 시뮬레이션 앱 종료 요청
         # sys.exit(0) # 필요시 강제 종료 (보통은 rclpy spin 종료 후 자연스럽게)
 
-
     def add_object_peginhole(self):
         hole_usd_path = "/home/choiyj/Desktop/hole_o_30.usd"
         add_reference_to_stage(hole_usd_path, "/World/hole_o_30")
         hole = RigidPrim(
             prim_paths_expr="/World/hole_o_30",                
             name="hole_o_30",
-            positions=np.array([[0.95, 0.05, 0.00]]),
+            positions=np.array([[0.97, 0.05, 0.00]]),
             scales=[np.ones(3) * 1.0]
         )
 
@@ -246,11 +242,9 @@ class RobotarmController(Node):
         peg = RigidPrim(
             prim_paths_expr="/World/peg_o_30",
             name="peg_o_30",
-            positions=np.array([[0.95, 0.05, 0.8]]),
-            scales=[np.ones(3) * 1.0],
-
+            positions=np.array([[0.97, 0.05, 0.75]]),
+            scales=[np.ones(3) * 0.97],
         )
-
 
     def write_images_to_shm_and_signal(self, rgb_hand_np, rgb_mobile_np, depth_hand_np, depth_mobile_np):
         """RGB/Depth 이미지를 공유 메모리에 쓰고 신호를 보냅니다."""
@@ -283,7 +277,7 @@ class RobotarmController(Node):
         # robotarm_target_position_deg[4] -= 720 # 이 로직은 각도 범위에 따라 필요성 재검토
         
         for i in range(len(robotarm_target_position_deg)):
-            self.robotarm_target_position[i] = np.clip(np.deg2rad(robotarm_target_position_deg[i]), -np.pi, np.pi)
+            self.robotarm_target_position[i] = np.clip(np.round(np.deg2rad(robotarm_target_position_deg[i]), 2), -np.pi, np.pi)
         
         self.gripper_target_position = msg.gripper_state.position
         self.gripper_target_velocity = [msg.gripper_state.velocity[0]]*2
@@ -308,19 +302,33 @@ class RobotarmController(Node):
         msg.mobile_state.angular_velocity = float(angular_vel)
 
         # force3(x, y, z), torque3(x, y, z)
-        msg.force_torque = force_sensor[6]
+        msg.force_torque = force_sensor
 
         msg.stamp = time.time()
-        self.publisher.publish(msg)
+        self.publisher_control.publish(msg)
+
+    def publish_gui_info(self):
+        msg = GuiValue()
+        msg.force_torque = self.force_sensor[6]
+        msg.battery = 100
+        msg.linear_velocity = self.linear_vel
+        msg.angular_velocity = self.angular_vel
+        msg.gripper_opening = sum(self.position[6:8])
+        msg.joint_angles = (np.array(self.position[0:6])*180/np.pi).tolist()  # 각도를 도 단위로 변환
+        msg.cartesian_position = self.cartesian_position+self.cartesian_orientation
+
+        self.publisher_gui.publish(msg)
+
+    def calc_z_force(self, force):
+        pass
 
     def get_robot_state(self):
         # Get the gripper state (position, velocity, force)
         self.position = self.robotarm.get_joint_positions(joint_indices=WHOLE_INDICES).tolist()
         self.velocity = self.robotarm.get_joint_velocities(joint_indices=WHOLE_INDICES).tolist()
-        force = self.robotarm.get_measured_joint_efforts(joint_indices=WHOLE_INDICES).tolist()
-        gravity = self.gripper.get_generalized_gravity_forces(joint_indices=WHOLE_INDICES).tolist()[0]
-        cor = self.gripper.get_coriolis_and_centrifugal_forces(joint_indices=WHOLE_INDICES).tolist()[0]
-        self.real_force = [f - g - c for f, g, c in zip(force, gravity, cor)]
+        self.force = self.robotarm.get_measured_joint_efforts(joint_indices=WHOLE_INDICES).tolist()
+        gravity = self.gripper.get_generalized_gravity_forces(joint_indices=HANDE_INDICES).tolist()[0]
+        # cor = self.gripper.get_coriolis_and_centrifugal_forces(joint_indices=HANDE_INDICES).tolist()[0]
 
         self.force_sensor = self.robotarm.get_measured_joint_forces(joint_indices=WHOLE_INDICES).tolist()
 
@@ -330,7 +338,12 @@ class RobotarmController(Node):
         self.linear_vel = WHEEL_RADIUS * 0.5 * (omega_L + omega_R)
         self.angular_vel = WHEEL_RADIUS / WHEEL_BASE * (omega_R - omega_L)
 
-        return self.position, self.velocity, self.real_force, self.linear_vel, self.angular_vel, self.force_sensor
+        pos, ori = self.gripper.get_world_poses()
+        self.cartesian_position = pos[0].tolist()
+        self.cartesian_orientation = ori[0].tolist()
+
+        # print(self.cartesian_position, self.cartesian_orientation)
+        return self.position, self.velocity, self.force, self.linear_vel, self.angular_vel, gravity
     
     def differential_controller_skid_steer(self, target_linear_vel, target_angular_vel):
         left_correctionF = 0.08
@@ -413,6 +426,7 @@ class RobotarmController(Node):
                 self.write_images_to_shm_and_signal(rgb_hand_np, rgb_mobile_np, depth_hand_np, depth_mobile_np)
                 
                 self.publish_slave_info() # 다른 센서 데이터 발행
+                self.publish_gui_info()
                 # t_pub = time.perf_counter()
 
                 # FPS 로깅 (선택적)
@@ -430,14 +444,8 @@ class RobotarmController(Node):
         # 시뮬레이션 종료 처리
         self.get_logger().info("SimulationApp not running or rclpy not ok. Exiting run loop.")
         self.timeline.stop()
-        # self._cleanup_shared_memory() # atexit으로 이미 등록됨
-        # self.destroy_node() # main의 finally에서 처리
 
 def main(args=None):
-    # rclpy.init(args=args) # RobotarmController 내부에서 init하지 않도록 수정 필요 또는 컨텍스트 공유
-    # -> RobotarmController 생성자에서 super().__init__ 전에 rclpy.init()을 호출하면 안 됨.
-    #    main에서 한 번만 init하고 노드 생성자에 컨텍스트를 전달하거나, 노드 생성 시 자동으로 처리되도록 함.
-    #    가장 간단한 방법은 main에서 init하고, 노드는 그냥 생성.
     rclpy.init(args=args)
     robotarm_controller_node = None
     try:
