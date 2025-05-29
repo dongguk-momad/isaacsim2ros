@@ -1,5 +1,11 @@
 from omni.isaac.kit import SimulationApp
-simulation_app = SimulationApp({"headless": False})  # GUI를 띄우고 실행하려면 False
+
+config = {
+    "headless": False,
+    "renderer": "RaytracedLighting",
+    "anti_aliasing": 0, 
+}
+simulation_app = SimulationApp(config)
 
 import omni
 from isaacsim.core.api import World
@@ -8,26 +14,39 @@ from isaacsim.storage.native import get_assets_root_path
 from isaacsim.core.utils.extensions import enable_extension
 from isaacsim.core.utils.stage import add_reference_to_stage
 from isaacsim.core.utils.types import ArticulationAction
-from isaacsim.core.prims import Articulation
+from isaacsim.core.prims import Articulation, XFormPrim
 from isaacsim.core.api.objects import DynamicCuboid
 from isaacsim.robot.wheeled_robots.robots import WheeledRobot
 from isaacsim.robot.wheeled_robots.controllers.differential_controller import DifferentialController
+from isaacsim.sensors.camera import Camera
 from isaacsim.core.prims import RigidPrim
+from isaacsim.core.api import PhysicsContext
 
 # ROS 2 관련
 import time
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32, Float32MultiArray
-from momad_msgs.msg import ControlValue, GripperValue
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from std_msgs.msg import Float32, Float32MultiArray, Header
+from momad_msgs.msg import ControlValue, GuiValue
+
+# 공유 메모리 관련
+from multiprocessing import shared_memory
+import signal
+import atexit
 
 # Isaac Sim ROS 2 Bridge 활성화
 enable_extension("isaacsim.ros2.bridge")
 simulation_app.update()
-simulation_app.set_setting("/rtx/pathtracing/enable", False)
-simulation_app.set_setting("/rtx/post/dlss/enable",   True)
-simulation_app.update()
+simulation_app.set_setting("/rtx/post/aa/op", 3)
+simulation_app.set_setting("/rtx-defaults/post/dlss/execMode", 0)
+simulation_app.set_setting("/rtx/post/dlss/execMode", 0)
+simulation_app.set_setting("/rtx-transient/dlssg/enabled", True)
+
+
+MODE = "PEG_IN_HOLE"  # "PEG_IN_HOLE" or "ONLY_ROBOT"
+
 MAX_GRIPPER_POS = 0.025
 
 WHEEL_RADIUS = 0.147
@@ -58,91 +77,204 @@ JACKAL_INDICES = [
 ]
 
 WHOLE_INDICES = UR5_INDICES+HANDE_INDICES+JACKAL_INDICES
-      
+
+# --- 공유 메모리 설정 ---
+# 이미지 크기 및 데이터 타입 (FastAPI 서버와 동일하게 유지해야 함)
+IMAGE_WIDTH = 640
+IMAGE_HEIGHT = 480
+RGB_CHANNELS = 3
+RGB_DTYPE = np.uint8
+DEPTH_CHANNELS = 1 # Depth는 단일 채널
+DEPTH_DTYPE = np.float32 # Isaac Sim Camera의 get_depth()는 보통 float32 (미터 단위)
+
+# 각 이미지에 대한 SHM 정보 (이름, 크기, 형태, 타입)
+# 이 이름들은 FastAPI 서버에서도 동일하게 사용해야 합니다.
+SHM_CONFIG = {
+    "mobile_rgb": {"name": "shm_mobile_rgb", "shape": (IMAGE_HEIGHT, IMAGE_WIDTH, RGB_CHANNELS), "dtype": RGB_DTYPE},
+    "mobile_depth": {"name": "shm_mobile_depth", "shape": (IMAGE_HEIGHT, IMAGE_WIDTH), "dtype": DEPTH_DTYPE}, # Depth는 채널 축 없음
+    "hand_rgb": {"name": "shm_hand_rgb", "shape": (IMAGE_HEIGHT, IMAGE_WIDTH, RGB_CHANNELS), "dtype": RGB_DTYPE},
+    "hand_depth": {"name": "shm_hand_depth", "shape": (IMAGE_HEIGHT, IMAGE_WIDTH), "dtype": DEPTH_DTYPE},
+}
+
+# 각 SHM 세그먼트의 바이트 크기 계산
+for key in SHM_CONFIG:
+    config_item = SHM_CONFIG[key]
+    config_item["size"] = int(np.prod(config_item["shape"]) * np.dtype(config_item["dtype"]).itemsize)
 
 class RobotarmController(Node):
     def __init__(self):
-        super().__init__("robotarm_controller")
-
-        self.target_position = [0.0, -1.5, 1.5, 0.0, 0.0, 0.0, 0.0, 0.0]  # default target
+        super().__init__("robotarm_controller_shm")
+        
+        self.target_position = [0.0, -1.5, 1.5, 0.0, 0.0, 0.0, 0.0, 0.0]
         self.subscription = self.create_subscription(ControlValue, "/master_info", self.command_callback, 1)
-        self.publisher = self.create_publisher(ControlValue, "/slave_info", 1)
-        self.publisher2 = self.create_publisher(Float32MultiArray, "/force", 1)
+        self.publisher_control = self.create_publisher(ControlValue, "/slave_info", 1)
+        self.publisher_gui = self.create_publisher(GuiValue, "/isaacsim_to_gui", 1)
+
+        # --- SHM 및 신호용 Publisher 초기화 ---
+        self.shm_segments = {} # 생성된 SHM 객체 저장
+        self.shm_np_arrays = {} # SHM에 매핑된 NumPy 배열 저장
+        self._init_shared_memory()
+
+        self.image_signal_publisher = self.create_publisher(Header, "/isaac_image_signal", 10)
 
         # Isaac Sim World 초기화
         self.timeline = omni.timeline.get_timeline_interface()
-        # self.world = World(stage_units_in_meters=1.0)
-        self.world = World(stage_units_in_meters=1.0, physics_dt=1/240, rendering_dt=1/25)
-        self.world.scene.add_default_ground_plane()
+        self.world = World(stage_units_in_meters=1.0, physics_dt=1/250)
 
-        # ur5_usd_path = "/home/choiyj/Desktop/moma/urhand5_flatten.usd"
-        momad_usd_path = "/home/choiyj/Desktop/momad_test3_cam.usd"
-        add_reference_to_stage(momad_usd_path, "/World")
+        momad_usd_path = "/home/choiyj/Desktop/momad_peg_in_hole.usd" # USD 경로 확인 필요
+        add_reference_to_stage(momad_usd_path, "/World/momad")
 
-        # SingleManipulator 생성
         self.robotarm = SingleManipulator(
-            prim_path="/World/ur5",
-            end_effector_prim_path="/World/ur5/wrist_3_link/flange",  # UR5의 엔드이펙터 링크 이름
+            prim_path="/World/momad/robot/ur5",
+            end_effector_prim_path="/World/momad/robot/ur5/wrist_3_link/flange",
             name="ur5",
         )
-        self.gripper = Articulation("/World/hande")
+        self.gripper = Articulation("/World/momad/robot/hande")
 
-        # 월드 초기화
-        # self.world.scene.add_default_ground_plane()
+        self.cam_mobile = Camera(
+            prim_path="/World/momad/robot/jackal_basic/base_link/RSD455/Camera_Pseudo_Depth",
+            resolution=(IMAGE_WIDTH, IMAGE_HEIGHT), 
+        )
+        self.cam_hand = Camera(
+            prim_path="/World/momad/robot/hande/tool0/RSD455/Camera_Pseudo_Depth",
+            resolution=(IMAGE_WIDTH, IMAGE_HEIGHT), 
+        )
+        self.world.scene.add_default_ground_plane()
         self.world.reset()
 
-        # UR5 초기화 (필수!)
         self.robotarm.initialize()
         self.gripper.initialize()
+        self.cam_hand.initialize()
+        self.cam_mobile.initialize()
+ 
+        self.cam_hand.add_distance_to_image_plane_to_frame() 
+        self.cam_mobile.add_distance_to_image_plane_to_frame()
 
-        self.robotarm_target_position = [0.0, -1.0, 1.0, 0.0, 0.0, 0.0]
+        self.robotarm_target_position = [0.0, -1.0, 1.3, 0.5, 0.5, 0.5]
         self.robotarm_target_velocity = [0.0] * 6
-        
         self.gripper_target_position = [0.0] * 2
         self.gripper_target_velocity = [0.0] * 2 
-
         self.mobile_target_angular = 0.0
         self.mobile_target_linear = 0.0
 
+        self.position = [0.0] * 12
+        self.force_sensor = [[0.0] * 6]*10
+        self.cartesian_position = [0.0, 0.0, 0.0]
+        self.cartesian_orientation = [0.0, 0.0, 0.0, 1.0]
+
         self.robotarm.set_joint_positions(self.robotarm_target_position, UR5_INDICES)
-        # stabilize
-        for _ in range(40):
+        for _ in range(40): # 안정화 시간
             self.world.step(render=True)
 
-        hole_usd_path = "/home/choiyj/Desktop/hole_o.usd"
-        add_reference_to_stage(hole_usd_path, "/World/hole_o")
-        hole = RigidPrim(
-            prim_paths_expr="/World/hole_o",
-            name="hole_o",
-            positions=np.array([[1.0, 0, 0.01]]),
-            scales=[np.ones(3) * [1, 1, 2]]
-        )
+        # if MODE == "PEG_IN_HOLE":
+        #     self.add_object_peginhole()
 
-        peg_usd_path = "/home/choiyj/Desktop/peg_o.usd"
-        add_reference_to_stage(peg_usd_path, "/World/peg_o")
-        peg = RigidPrim(
-            prim_paths_expr="/World/peg_o",
-            name="peg_o",
-            positions=np.array([[1.0, 0, 0.7]]),
-            scales=[np.ones(3) * 1.0],
+        # 프로그램 종료 시 SHM 정리 등록
+        atexit.register(self._cleanup_shared_memory)
+        # SIGINT, SIGTERM 등 주요 종료 시그널에 대한 핸들러 등록
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
 
-        )
+        self.get_logger().info("RobotarmController (SHM version) initialized.")
 
-    def command_callback(self, msg):
-        latency = time.time() - msg.stamp
-        print("ws latency: ", latency)
-        # pass
-        self.robotarm_target_position = msg.robotarm_state.position
-        self.robotarm_target_velocity = msg.robotarm_state.velocity
+    def _init_shared_memory(self):
+        self.get_logger().info("Initializing shared memory segments...")
+        for key, config_item in SHM_CONFIG.items():
+            shm_name = config_item["name"]
+            shm_size = config_item["size"]
+            shm_shape = config_item["shape"]
+            shm_dtype = config_item["dtype"]
+            try:
+                # 기존에 같은 이름의 SHM이 남아있을 수 있으므로 시도 후, 없으면 생성
+                shm = shared_memory.SharedMemory(name=shm_name, create=False, size=shm_size)
+                self.get_logger().info(f"Attached to existing SHM: {shm_name}")
+            except FileNotFoundError:
+                shm = shared_memory.SharedMemory(name=shm_name, create=True, size=shm_size)
+                self.get_logger().info(f"Created new SHM: {shm_name} with size {shm_size} bytes")
+            
+            self.shm_segments[key] = shm
+            # SHM 버퍼를 NumPy 배열로 매핑
+            self.shm_np_arrays[key] = np.ndarray(shm_shape, dtype=shm_dtype, buffer=shm.buf)
+        self.get_logger().info("Shared memory segments initialized/attached.")
+
+    def _cleanup_shared_memory(self):
+        self.get_logger().info("Cleaning up shared memory segments...")
+        for key, shm in self.shm_segments.items():
+            try:
+                shm.close() # SHM 객체 닫기
+                # 생성한 프로세스에서만 unlink 수행 (또는 마지막 detach 시)
+                # 여기서는 이 클래스가 생성자라고 가정하고 unlink 시도
+                shm.unlink() 
+                self.get_logger().info(f"Closed and unlinked SHM: {SHM_CONFIG[key]['name']}")
+            except FileNotFoundError:
+                self.get_logger().warn(f"SHM segment {SHM_CONFIG[key]['name']} already unlinked or not found during cleanup.")
+            except Exception as e:
+                self.get_logger().error(f"Error cleaning up SHM {SHM_CONFIG[key]['name']}: {e}")
+        self.shm_segments.clear()
+        self.shm_np_arrays.clear()
+
+    def _signal_handler(self, signum, frame):
+        self.get_logger().warn(f"Received signal {signum}. Cleaning up and shutting down...")
+        if simulation_app.is_running():
+             simulation_app.close() # 시뮬레이션 앱 종료 요청
+
+    # def add_object_peginhole(self):
+    #     hole = RigidPrim(
+    #         prim_paths_expr="/World/momad/peg_in_hole/rec_table",                
+    #         name="rec_table",
+    #         positions=np.array([[1.1, 0.05, 0.00]]),
+    #         scales=[np.ones(3) * 0.001]
+    #     )
+    #     peg = RigidPrim(
+    #         prim_paths_expr="/World/momad/peg_in_hole/rec_peg",
+    #         name="rec_peg",
+    #         positions=np.array([[1.1, 0.1, 0.75]]),
+    #         scales=[np.ones(3) * 0.001],
+    #     )
+
+    def write_images_to_shm_and_signal(self, rgb_hand_np, rgb_mobile_np, depth_hand_np, depth_mobile_np):
+        """RGB/Depth 이미지를 공유 메모리에 쓰고 신호를 보냅니다."""
+        try:
+            # 1) SHM 복사 시간 측정
+            t_prep_start = time.time()
+            self.shm_np_arrays["hand_rgb"][:]   = rgb_hand_np
+            self.shm_np_arrays["mobile_rgb"][:] = rgb_mobile_np
+            self.shm_np_arrays["hand_depth"][:] = depth_hand_np
+            self.shm_np_arrays["mobile_depth"][:] = depth_mobile_np
+            t_prep_end = time.time()
+            prep_time = t_prep_end - t_prep_start
+
+            # 2) 퍼블리시 시간 측정
+            signal_msg = Header()
+            signal_msg.stamp    = self.get_clock().now().to_msg()
+            signal_msg.frame_id = "new_images_ready"
+            t_pub_start = time.time()
+            self.image_signal_publisher.publish(signal_msg)
+            t_pub_end = time.time()
+            pub_time = t_pub_end - t_pub_start
+
+            # 3) 로그 출력 (1초에 최대 1회)
+            self.get_logger().info(
+                f'Images→SHM & Signal: Prep={prep_time:.4f}s, Pub={pub_time:.4f}s',
+                throttle_duration_sec=1.0
+            )
+
+        except Exception as e:
+            self.get_logger().error(f"Error in write_images_to_shm_and_signal: {e}")
         
-        for i in range(len(self.robotarm_target_position)):
-            self.robotarm_target_position[i] = np.clip(self.robotarm_target_position[i]*np.pi/180, -3.14, 3.14)
+    def command_callback(self, msg):
 
-        self.gripper_target_position = msg.gripper_state.position
+        robotarm_target_position_deg = msg.robotarm_state.position[0:6]
+        self.robotarm_target_velocity = np.array(msg.robotarm_state.velocity[0:6])  # UR5의 모든 조인트는 음수 방향으로 회전
+        
+        for i in range(len(robotarm_target_position_deg)):
+            self.robotarm_target_position[i] = np.clip(np.deg2rad(robotarm_target_position_deg[i]), -np.pi, np.pi)
+        
+        _gripper_target_position = msg.gripper_state.position
         self.gripper_target_velocity = msg.gripper_state.velocity
 
-        for i in range(len(self.gripper_target_position)):
-            self.gripper_target_position[i] = np.clip(self.gripper_target_position[i], 0, 1) * MAX_GRIPPER_POS
+        for i in range(len(_gripper_target_position)):
+            self.gripper_target_position[i] = np.clip(_gripper_target_position[i], 0, 1) * MAX_GRIPPER_POS
 
         self.mobile_target_linear = msg.mobile_state.linear_velocity
         self.mobile_target_angular = msg.mobile_state.angular_velocity
@@ -161,19 +293,33 @@ class RobotarmController(Node):
         msg.mobile_state.angular_velocity = float(angular_vel)
 
         # force3(x, y, z), torque3(x, y, z)
-        msg.force_torque = force_sensor[6]
+        msg.force_torque = force_sensor
 
         msg.stamp = time.time()
-        self.publisher.publish(msg)
+        self.publisher_control.publish(msg)
+
+    def publish_gui_info(self):
+        msg = GuiValue()
+        msg.force_torque = self.force_sensor[6]
+        msg.battery = 100
+        msg.linear_velocity = self.linear_vel
+        msg.angular_velocity = self.angular_vel
+        msg.gripper_opening = sum(self.position[6:8]*1000)
+        msg.joint_angles = (np.array(self.position[0:6])*180/np.pi).tolist()  # 각도를 도 단위로 변환
+        msg.cartesian_position = self.cartesian_position+self.cartesian_orientation
+
+        self.publisher_gui.publish(msg)
+
+    def calc_z_force(self, force):
+        pass
 
     def get_robot_state(self):
         # Get the gripper state (position, velocity, force)
         self.position = self.robotarm.get_joint_positions(joint_indices=WHOLE_INDICES).tolist()
         self.velocity = self.robotarm.get_joint_velocities(joint_indices=WHOLE_INDICES).tolist()
-        force = self.robotarm.get_measured_joint_efforts(joint_indices=WHOLE_INDICES).tolist()
-        gravity = self.gripper.get_generalized_gravity_forces(joint_indices=WHOLE_INDICES).tolist()[0]
-        cor = self.gripper.get_coriolis_and_centrifugal_forces(joint_indices=WHOLE_INDICES).tolist()[0]
-        self.real_force = [f - g - c for f, g, c in zip(force, gravity, cor)]
+        self.force = self.robotarm.get_measured_joint_efforts(joint_indices=WHOLE_INDICES).tolist()
+        gravity = self.gripper.get_generalized_gravity_forces(joint_indices=HANDE_INDICES).tolist()[0]
+        # cor = self.gripper.get_coriolis_and_centrifugal_forces(joint_indices=HANDE_INDICES).tolist()[0]
 
         self.force_sensor = self.robotarm.get_measured_joint_forces(joint_indices=WHOLE_INDICES).tolist()
 
@@ -183,7 +329,11 @@ class RobotarmController(Node):
         self.linear_vel = WHEEL_RADIUS * 0.5 * (omega_L + omega_R)
         self.angular_vel = WHEEL_RADIUS / WHEEL_BASE * (omega_R - omega_L)
 
-        return self.position, self.velocity, self.real_force, self.linear_vel, self.angular_vel, self.force_sensor
+        pos, ori = self.gripper.get_world_poses()
+        self.cartesian_position = pos[0].tolist()
+        self.cartesian_orientation = ori[0].tolist()
+
+        return self.position, self.velocity, self.force, self.linear_vel, self.angular_vel, gravity
     
     def differential_controller_skid_steer(self, target_linear_vel, target_angular_vel):
         left_correctionF = 0.08
@@ -221,36 +371,74 @@ class RobotarmController(Node):
         self.timeline.play()
         reset_needed = False
 
-        while simulation_app.is_running():
+        while simulation_app.is_running() and rclpy.ok(): # rclpy.ok() 추가
             self.world.step(render=True)
-            rclpy.spin_once(self, timeout_sec=0.0)
+            rclpy.spin_once(self, timeout_sec=0.0) # ROS 이벤트 처리 (매우 짧은 타임아웃)
 
             if self.world.is_stopped() and not reset_needed:
                 reset_needed = True
             if self.world.is_playing():
                 if reset_needed:
                     self.world.reset()
+                    # SHM 재초기화는 필요 없음 (프로세스 재시작 시에만)
+                    self.robotarm.set_joint_positions(self.robotarm_target_position, UR5_INDICES) # 리셋 후 초기 자세
+                    for _ in range(40): self.world.step(render=True) # 안정화
                     reset_needed = False
-                self.get_robot_state()
+                
+                self.get_robot_state() # 다른 데이터 업데이트
 
+                # 로봇 제어 액션 적용
                 self.robotarm.apply_action(ArticulationAction(joint_positions=self.gripper_target_position, joint_velocities=self.gripper_target_velocity, joint_indices=HANDE_INDICES))
-
-                # self.robotarm.apply_action(ArticulationAction(joint_positions=self.robotarm_target_position, joint_velocities=self.robotarm_target_velocity, joint_indices=UR5_INDICES))
                 self.robotarm.apply_action(ArticulationAction(joint_positions=self.robotarm_target_position, joint_indices=UR5_INDICES))
-
                 self.robotarm.apply_action(self.differential_controller_skid_steer(self.mobile_target_linear, self.mobile_target_angular))
-                # self.robotarm.apply_action(self.differential_controller_skid_steer(0.0, 0.5))
 
-                self.publish_slave_info()
+                # 카메라 데이터 가져오기 (NumPy 배열)
+                rgb_hand_np = self.cam_hand.get_rgb() # shape: (H, W, 4), RGBA, uint8
+                rgb_mobile_np = self.cam_mobile.get_rgb() # shape: (H, W, 4), RGBA, uint8
+                depth_hand_np = self.cam_hand.get_depth() # shape: (H, W), float32 (meters)
+                depth_mobile_np = self.cam_mobile.get_depth() # shape: (H, W), float32 (meters)
 
-        # 시뮬레이션 종료
+                # RGB 이미지는 RGBA에서 RGB로 변환 필요 (SHM_CONFIG의 채널 수에 맞게)
+                if rgb_hand_np.shape[2] == 4 and RGB_CHANNELS == 3:
+                    rgb_hand_np = rgb_hand_np[:, :, :3] 
+                if rgb_mobile_np.shape[2] == 4 and RGB_CHANNELS == 3:
+                    rgb_mobile_np = rgb_mobile_np[:, :, :3]
+                
+                # SHM에 쓰고 신호 보내기
+                self.write_images_to_shm_and_signal(rgb_hand_np, rgb_mobile_np, depth_hand_np, depth_mobile_np)
+                
+                self.publish_slave_info() # 다른 센서 데이터 발행
+                self.publish_gui_info()
+
+        # 시뮬레이션 종료 처리
+        self.get_logger().info("SimulationApp not running or rclpy not ok. Exiting run loop.")
         self.timeline.stop()
-        self.destroy_node()
-        simulation_app.close()
 
-
+def main(args=None):
+    rclpy.init(args=args)
+    robotarm_controller_node = None
+    try:
+        robotarm_controller_node = RobotarmController()
+        robotarm_controller_node.run() # run 메서드 내에서 spin_once 사용
+    except KeyboardInterrupt:
+        print("KeyboardInterrupt, shutting down.")
+    except Exception as e:
+        if robotarm_controller_node:
+            robotarm_controller_node.get_logger().fatal(f"Unhandled exception in main: {e}", exc_info=True)
+        else:
+            print(f"Unhandled exception before node creation: {e}")
+    finally:
+        if robotarm_controller_node:
+            robotarm_controller_node.get_logger().info("Destroying node...")
+            # SHM 정리는 atexit으로 하지만, 명시적 호출도 고려 가능
+            robotarm_controller_node._cleanup_shared_memory() # 명시적 호출 추가
+            robotarm_controller_node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+        print("RCLPY shutdown.")
+        if simulation_app.is_running(): # 앱이 여전히 실행 중이면 종료
+            simulation_app.close()
+        print("Isaac Sim application closed.")
 
 if __name__ == "__main__":
-    rclpy.init()
-    robotarm_controller = RobotarmController()
-    robotarm_controller.run()
+    main()

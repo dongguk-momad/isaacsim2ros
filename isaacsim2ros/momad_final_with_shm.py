@@ -155,7 +155,7 @@ class RobotarmController(Node):
         self.cam_hand.add_distance_to_image_plane_to_frame() 
         self.cam_mobile.add_distance_to_image_plane_to_frame()
 
-        self.robotarm_target_position = [0.0, -1.0, 1.3, 0.0, 0.0, 0.0]
+        self.robotarm_target_position = [0.0, -1.0, 1.3, 0.5, 0.5, 0.5]
         self.robotarm_target_velocity = [0.0] * 6
         self.gripper_target_position = [0.0] * 2
         self.gripper_target_velocity = [0.0] * 2 
@@ -228,40 +228,68 @@ class RobotarmController(Node):
         # sys.exit(0) # 필요시 강제 종료 (보통은 rclpy spin 종료 후 자연스럽게)
 
     def add_object_peginhole(self):
-        hole_usd_path = "/home/choiyj/Desktop/hole_o_30.usd"
-        add_reference_to_stage(hole_usd_path, "/World/hole_o_30")
+        # hole_usd_path = "/home/choiyj/Desktop/hole_o_30.usd"
+        # add_reference_to_stage(hole_usd_path, "/World/hole_o_30")
+        # hole = RigidPrim(
+        #     prim_paths_expr="/World/hole_o_30",                
+        #     name="hole_o_30",
+        #     positions=np.array([[0.97, 0.05, 0.00]]),
+        #     scales=[np.ones(3) * 1.0]
+        # )
+
+        # peg_usd_path = "/home/choiyj/Desktop/peg_o_30.usd"
+        # add_reference_to_stage(peg_usd_path, "/World/peg_o_30")
+        # peg = RigidPrim(
+        #     prim_paths_expr="/World/peg_o_30",
+        #     name="peg_o_30",
+        #     positions=np.array([[0.97, 0.05, 0.75]]),
+        #     scales=[np.ones(3) * 0.97],
+        # )
+
+        hole_usd_path = "/home/choiyj/Desktop/Peg_IN_Hole_Task/rec_table.usd"
+        add_reference_to_stage(hole_usd_path, "/World/rec_table")
         hole = RigidPrim(
-            prim_paths_expr="/World/hole_o_30",                
-            name="hole_o_30",
-            positions=np.array([[0.97, 0.05, 0.00]]),
-            scales=[np.ones(3) * 1.0]
+            prim_paths_expr="/World/rec_table",                
+            name="rec_table",
+            positions=np.array([[1.1, 0.05, 0.00]]),
+            scales=[np.ones(3) * 0.001]
         )
 
-        peg_usd_path = "/home/choiyj/Desktop/peg_o_30.usd"
-        add_reference_to_stage(peg_usd_path, "/World/peg_o_30")
+        peg_usd_path = "/home/choiyj/Desktop/Peg_IN_Hole_Task/rec_peg.usd"
+        add_reference_to_stage(peg_usd_path, "/World/rec_peg")
         peg = RigidPrim(
-            prim_paths_expr="/World/peg_o_30",
-            name="peg_o_30",
-            positions=np.array([[0.97, 0.05, 0.75]]),
-            scales=[np.ones(3) * 0.97],
+            prim_paths_expr="/World/rec_peg",
+            name="rec_peg",
+            positions=np.array([[1.1, 0.1, 0.75]]),
+            scales=[np.ones(3) * 0.001],
         )
 
     def write_images_to_shm_and_signal(self, rgb_hand_np, rgb_mobile_np, depth_hand_np, depth_mobile_np):
         """RGB/Depth 이미지를 공유 메모리에 쓰고 신호를 보냅니다."""
         try:
-            # 데이터 SHM에 복사
-            # 형상과 타입이 일치해야 함
-            self.shm_np_arrays["hand_rgb"][:] = rgb_hand_np
+            # 1) SHM 복사 시간 측정
+            t_prep_start = time.time()
+            self.shm_np_arrays["hand_rgb"][:]   = rgb_hand_np
             self.shm_np_arrays["mobile_rgb"][:] = rgb_mobile_np
             self.shm_np_arrays["hand_depth"][:] = depth_hand_np
             self.shm_np_arrays["mobile_depth"][:] = depth_mobile_np
+            t_prep_end = time.time()
+            prep_time = t_prep_end - t_prep_start
 
-            # 신호용 메시지 발행
+            # 2) 퍼블리시 시간 측정
             signal_msg = Header()
-            signal_msg.stamp = self.get_clock().now().to_msg()
-            signal_msg.frame_id = "new_images_ready" # 어떤 신호인지 나타내는 ID
+            signal_msg.stamp    = self.get_clock().now().to_msg()
+            signal_msg.frame_id = "new_images_ready"
+            t_pub_start = time.time()
             self.image_signal_publisher.publish(signal_msg)
-            # self.get_logger().info("Images written to SHM and signal published.", throttle_duration_sec=1.0)
+            t_pub_end = time.time()
+            pub_time = t_pub_end - t_pub_start
+
+            # 3) 로그 출력 (1초에 최대 1회)
+            self.get_logger().info(
+                f'Images→SHM & Signal: Prep={prep_time:.4f}s, Pub={pub_time:.4f}s',
+                throttle_duration_sec=1.0
+            )
 
         except Exception as e:
             self.get_logger().error(f"Error in write_images_to_shm_and_signal: {e}")
@@ -271,19 +299,17 @@ class RobotarmController(Node):
         # ws_latency_ms = (time.time() - msg.stamp) * 1000 # time.time()은 시스템 시간
         # self.get_logger().info(f"WebSocket command latency: {ws_latency_ms:.2f} ms", อื่นๆ)
 
-        robotarm_target_position_deg = msg.robotarm_state.position
-        self.robotarm_target_velocity = msg.robotarm_state.velocity
-        robotarm_target_position_deg[5] *=-1
-        # robotarm_target_position_deg[4] -= 720 # 이 로직은 각도 범위에 따라 필요성 재검토
+        robotarm_target_position_deg = msg.robotarm_state.position[0:6]
+        self.robotarm_target_velocity = np.array(msg.robotarm_state.velocity[0:6])  # UR5의 모든 조인트는 음수 방향으로 회전
         
         for i in range(len(robotarm_target_position_deg)):
-            self.robotarm_target_position[i] = np.clip(np.round(np.deg2rad(robotarm_target_position_deg[i]), 2), -np.pi, np.pi)
+            self.robotarm_target_position[i] = np.clip(np.deg2rad(robotarm_target_position_deg[i]), -np.pi, np.pi)
         
-        self.gripper_target_position = msg.gripper_state.position
-        self.gripper_target_velocity = [msg.gripper_state.velocity[0]]*2
+        _gripper_target_position = msg.gripper_state.position
+        self.gripper_target_velocity = msg.gripper_state.velocity
 
-        for i in range(len(self.gripper_target_position)):
-            self.gripper_target_position[i] = np.clip(self.gripper_target_position[i], 0, 1) * MAX_GRIPPER_POS
+        for i in range(len(_gripper_target_position)):
+            self.gripper_target_position[i] = np.clip(_gripper_target_position[i], 0, 1) * MAX_GRIPPER_POS
 
         self.mobile_target_linear = msg.mobile_state.linear_velocity
         self.mobile_target_angular = msg.mobile_state.angular_velocity
@@ -313,7 +339,7 @@ class RobotarmController(Node):
         msg.battery = 100
         msg.linear_velocity = self.linear_vel
         msg.angular_velocity = self.angular_vel
-        msg.gripper_opening = sum(self.position[6:8])
+        msg.gripper_opening = sum(self.position[6:8]*1000)
         msg.joint_angles = (np.array(self.position[0:6])*180/np.pi).tolist()  # 각도를 도 단위로 변환
         msg.cartesian_position = self.cartesian_position+self.cartesian_orientation
 
