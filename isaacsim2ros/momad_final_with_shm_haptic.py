@@ -45,8 +45,6 @@ simulation_app.set_setting("/rtx/post/dlss/execMode", 0)
 simulation_app.set_setting("/rtx-transient/dlssg/enabled", True)
 
 
-MODE = "PEG_IN_HOLE"  # "PEG_IN_HOLE" or "ONLY_ROBOT"
-
 MAX_GRIPPER_POS = 0.025
 
 WHEEL_RADIUS = 0.147
@@ -121,27 +119,30 @@ class RobotarmController(Node):
         self.timeline = omni.timeline.get_timeline_interface()
         self.world = World(stage_units_in_meters=1.0, physics_dt=1/250)
 
-        momad_usd_path = "/home/choiyj/Desktop/momad_test3_cam_test.usd" # USD 경로 확인 필요
-        add_reference_to_stage(momad_usd_path, "/World/robot")
+        momad_usd_path = "/home/choiyj/Desktop/momad_haptic.usd" # USD 경로 확인 필요
+        add_reference_to_stage(momad_usd_path, "/World/momad")
 
         referenced_asset_prim = XFormPrim(
-            prim_paths_expr="/World/robot",
-            translations=np.array([[0.0, 0.0, 0.55],[0.0, 0.0, 0.55],[0.0, 0.0, 0.55]]),
+            prim_paths_expr=["/World/momad/robot/ur5", "/World/momad/robot/hande", "/World/momad/robot/jackal_basic"],
+            translations=np.array([[0.0, 0.0, 0.8],[0.0, 0.0, 0.8],[0.0, 0.0, 0.8]]),
         )
+
+        self.world.scene.add_default_ground_plane()
+
 
         self.robotarm = SingleManipulator(
-            prim_path="/World/robot/ur5",
-            end_effector_prim_path="/World/robot/ur5/wrist_3_link/flange",
+            prim_path="/World/momad/robot/ur5",
+            end_effector_prim_path="/World/momad/robot/ur5/wrist_3_link/flange",
             name="ur5",
         )
-        self.gripper = Articulation("/World/robot/hande")
+        self.gripper = Articulation("/World/momad/robot/hande")
 
         self.cam_mobile = Camera(
-            prim_path="/World/robot/jackal_basic/base_link/RSD455/Camera_Pseudo_Depth",
+            prim_path="/World/momad/robot/jackal_basic/base_link/RSD455/Camera_Pseudo_Depth",
             resolution=(IMAGE_WIDTH, IMAGE_HEIGHT), 
         )
         self.cam_hand = Camera(
-            prim_path="/World/robot/hande/tool0/RSD455/Camera_Pseudo_Depth",
+            prim_path="/World/momad/robot/hande/tool0/RSD455/Camera_Pseudo_Depth",
             resolution=(IMAGE_WIDTH, IMAGE_HEIGHT), 
         )
         self.world.scene.add_default_ground_plane()
@@ -170,9 +171,6 @@ class RobotarmController(Node):
         self.robotarm.set_joint_positions(self.robotarm_target_position, UR5_INDICES)
         for _ in range(40): # 안정화 시간
             self.world.step(render=True)
-
-        if MODE == "PEG_IN_HOLE":
-            self.add_object_peginhole()
 
         # 프로그램 종료 시 SHM 정리 등록
         atexit.register(self._cleanup_shared_memory)
@@ -226,16 +224,6 @@ class RobotarmController(Node):
         if simulation_app.is_running():
              simulation_app.close() # 시뮬레이션 앱 종료 요청
         # sys.exit(0) # 필요시 강제 종료 (보통은 rclpy spin 종료 후 자연스럽게)
-
-    def add_object_peginhole(self):
-        hole_usd_path = "/home/choiyj/Desktop/Haptic_table.usd"
-        add_reference_to_stage(hole_usd_path, "/World/Haptic_table")
-        hole = RigidPrim(
-            prim_paths_expr="/World/Haptic_table",                
-            name="Haptic_table",
-            positions=np.array([[1.1, 0.05, 0.00]]),
-            scales=[np.ones(3) * 0.001]
-        )
 
     def write_images_to_shm_and_signal(self, rgb_hand_np, rgb_mobile_np, depth_hand_np, depth_mobile_np):
         """RGB/Depth 이미지를 공유 메모리에 쓰고 신호를 보냅니다."""

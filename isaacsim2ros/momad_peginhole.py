@@ -119,10 +119,18 @@ class RobotarmController(Node):
 
         # Isaac Sim World 초기화
         self.timeline = omni.timeline.get_timeline_interface()
-        self.world = World(stage_units_in_meters=1.0, physics_dt=1/250)
+        self.world = World(stage_units_in_meters=1.0, physics_dt=1/200)
 
-        momad_usd_path = "/home/choiyj/Desktop/momad_peg_in_hole.usd" # USD 경로 확인 필요
+        momad_usd_path = "/home/choiyj/Desktop/momad_peg_in_hole_final.usd" # USD 경로 확인 필요
         add_reference_to_stage(momad_usd_path, "/World/momad")
+
+        referenced_asset_prim = XFormPrim(
+            prim_paths_expr=["/World/momad/robot/ur5", "/World/momad/robot/hande", "/World/momad/robot/jackal_basic"],
+            translations=np.array([[0.0, 0.0, 0.8],[0.0, 0.0, 0.8],[0.0, 0.0, 0.8]]),
+        )
+
+        self.world.scene.add_default_ground_plane()
+
 
         self.robotarm = SingleManipulator(
             prim_path="/World/momad/robot/ur5",
@@ -139,7 +147,6 @@ class RobotarmController(Node):
             prim_path="/World/momad/robot/hande/tool0/RSD455/Camera_Pseudo_Depth",
             resolution=(IMAGE_WIDTH, IMAGE_HEIGHT), 
         )
-        self.world.scene.add_default_ground_plane()
         self.world.reset()
 
         self.robotarm.initialize()
@@ -218,20 +225,6 @@ class RobotarmController(Node):
         if simulation_app.is_running():
              simulation_app.close() # 시뮬레이션 앱 종료 요청
 
-    # def add_object_peginhole(self):
-    #     hole = RigidPrim(
-    #         prim_paths_expr="/World/momad/peg_in_hole/rec_table",                
-    #         name="rec_table",
-    #         positions=np.array([[1.1, 0.05, 0.00]]),
-    #         scales=[np.ones(3) * 0.001]
-    #     )
-    #     peg = RigidPrim(
-    #         prim_paths_expr="/World/momad/peg_in_hole/rec_peg",
-    #         name="rec_peg",
-    #         positions=np.array([[1.1, 0.1, 0.75]]),
-    #         scales=[np.ones(3) * 0.001],
-    #     )
-
     def write_images_to_shm_and_signal(self, rgb_hand_np, rgb_mobile_np, depth_hand_np, depth_mobile_np):
         """RGB/Depth 이미지를 공유 메모리에 쓰고 신호를 보냅니다."""
         try:
@@ -267,6 +260,14 @@ class RobotarmController(Node):
         robotarm_target_position_deg = msg.robotarm_state.position[0:6]
         self.robotarm_target_velocity = np.array(msg.robotarm_state.velocity[0:6])  # UR5의 모든 조인트는 음수 방향으로 회전
         
+        # 로봇팔의 위치 로우패스필터 적용
+        alpha = 0.1  # 필터 계수 (0.0 ~ 1.0)
+        self.robotarm_target_position = [
+            (1 - alpha) * self.robotarm_target_position[i] + alpha * np.clip(robotarm_target_position_deg[i], -np.pi, np.pi)
+            for i in range(len(self.robotarm_target_position))
+        ]
+        # 로봇팔 목표 위치를 라디안으로 변환하고 제한
+        self.robotarm_target_position = np.array(self.robotarm_target_position)  # 리스트를 NumPy 배열로 변환
         for i in range(len(robotarm_target_position_deg)):
             self.robotarm_target_position[i] = np.clip(np.deg2rad(robotarm_target_position_deg[i]), -np.pi, np.pi)
         
@@ -342,14 +343,13 @@ class RobotarmController(Node):
         right_correctionR = 0.06
 
         # base speed
-        chi = 1.4 # experimentally tuned
+        chi = 5 # experimentally tuned
         
         effective_wheelbase = WHEEL_BASE * chi
         left_base_speed = ((2 * target_linear_vel) - (target_angular_vel * effective_wheelbase)) / (2 * WHEEL_RADIUS)
         right_base_speed = ((2 * target_linear_vel) + (target_angular_vel * effective_wheelbase)) / (2 * WHEEL_RADIUS)
 
-
-        # final wheel speeds
+ 
         front_left_speed = left_base_speed - left_correctionF * target_angular_vel
         rear_left_speed = front_left_speed - left_correctionR * target_angular_vel  
         front_right_speed = right_base_speed + right_correctionF * target_angular_vel
@@ -380,7 +380,6 @@ class RobotarmController(Node):
             if self.world.is_playing():
                 if reset_needed:
                     self.world.reset()
-                    # SHM 재초기화는 필요 없음 (프로세스 재시작 시에만)
                     self.robotarm.set_joint_positions(self.robotarm_target_position, UR5_INDICES) # 리셋 후 초기 자세
                     for _ in range(40): self.world.step(render=True) # 안정화
                     reset_needed = False
