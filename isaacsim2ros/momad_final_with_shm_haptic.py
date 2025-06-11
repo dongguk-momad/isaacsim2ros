@@ -119,7 +119,7 @@ class RobotarmController(Node):
         self.timeline = omni.timeline.get_timeline_interface()
         self.world = World(stage_units_in_meters=1.0, physics_dt=1/250)
 
-        momad_usd_path = "/home/choiyj/Desktop/momad_haptic.usd" # USD 경로 확인 필요
+        momad_usd_path = "/home/choiyj/Desktop/momad_haptic_final.usd" # USD 경로 확인 필요
         add_reference_to_stage(momad_usd_path, "/World/momad")
 
         referenced_asset_prim = XFormPrim(
@@ -207,7 +207,7 @@ class RobotarmController(Node):
                 shm.close() # SHM 객체 닫기
                 # 생성한 프로세스에서만 unlink 수행 (또는 마지막 detach 시)
                 # 여기서는 이 클래스가 생성자라고 가정하고 unlink 시도
-                shm.unlink() 
+                # shm.unlink() 
                 self.get_logger().info(f"Closed and unlinked SHM: {SHM_CONFIG[key]['name']}")
             except FileNotFoundError:
                 self.get_logger().warn(f"SHM segment {SHM_CONFIG[key]['name']} already unlinked or not found during cleanup.")

@@ -8,6 +8,7 @@ config = {
 simulation_app = SimulationApp(config)
 
 import omni
+import omni.timeline
 from isaacsim.core.api import World
 from isaacsim.robot.manipulators.manipulators import SingleManipulator
 from isaacsim.storage.native import get_assets_root_path
@@ -33,7 +34,6 @@ from momad_msgs.msg import ControlValue, GuiValue
 
 # 공유 메모리 관련
 from multiprocessing import shared_memory
-import multiprocessing.resource_tracker as rt
 import signal
 import atexit
 
@@ -127,7 +127,7 @@ class RobotarmController(Node):
 
         referenced_asset_prim = XFormPrim(
             prim_paths_expr=["/World/momad/robot/ur5", "/World/momad/robot/hande", "/World/momad/robot/jackal_basic"],
-            translations=np.array([[-1.0, -1.0, 0.15],[-1.0, -1.0, 0.15],[-1.0, -1.0, 0.15]]),
+            translations=np.array([[-0.8, 0.0, 0.8],[-0.8, 0.0, 0.8],[-0.8, 0.0, 0.8]]),
         )
 
         self.world.scene.add_default_ground_plane()
@@ -199,11 +199,6 @@ class RobotarmController(Node):
             except FileNotFoundError:
                 shm = shared_memory.SharedMemory(name=shm_name, create=True, size=shm_size)
                 self.get_logger().info(f"Created new SHM: {shm_name} with size {shm_size} bytes")
-                try:
-                    rt.unregister(shm.name, 'shared_memory')
-                except Exception:
-                    print(f"Failed to unregister shared memory {shm_name}, continuing...")
-
             
             self.shm_segments[key] = shm
             # SHM 버퍼를 NumPy 배열로 매핑
